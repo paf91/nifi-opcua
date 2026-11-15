@@ -5,6 +5,8 @@
 #include <open62541/plugin/accesscontrol_default.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -84,6 +86,45 @@ int main(int argc, char **argv) {
     UA_Array_delete(config->endpoints, config->endpointsSize, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
     config->endpoints = NULL; config->endpointsSize = 0;
     check(UA_ServerConfig_addAllEndpoints(config));
+    /* Configure endpoint tokens explicitly so discovery preserves the requested policy.
+     * Policy IDs include its suffix because open62541 uses that suffix during session activation. */
+    for(size_t i = 0; i < config->endpointsSize; i++) {
+        UA_EndpointDescription *endpoint = &config->endpoints[i];
+        UA_Array_delete(endpoint->userIdentityTokens, endpoint->userIdentityTokensSize,
+                        &UA_TYPES[UA_TYPES_USERTOKENPOLICY]);
+        endpoint->userIdentityTokens = NULL;
+        endpoint->userIdentityTokensSize = 0;
+        check(UA_Array_copy(config->accessControl.userTokenPolicies,
+                            config->accessControl.userTokenPoliciesSize,
+                            (void**)&endpoint->userIdentityTokens,
+                            &UA_TYPES[UA_TYPES_USERTOKENPOLICY]));
+        endpoint->userIdentityTokensSize = config->accessControl.userTokenPoliciesSize;
+        char marker[48];
+        int markerLength = snprintf(marker, sizeof(marker), "-fixture-%zu", i);
+        if(markerLength < 0 || (size_t)markerLength >= sizeof(marker)) exit(2);
+        for(size_t j = 0; j < endpoint->userIdentityTokensSize; j++) {
+            UA_UserTokenPolicy *token = &endpoint->userIdentityTokens[j];
+            UA_String policy = token->securityPolicyUri.length > 0
+                ? token->securityPolicyUri : endpoint->securityPolicyUri;
+            size_t suffixOffset = policy.length;
+            while(suffixOffset > 0 && policy.data[suffixOffset - 1] != '#') suffixOffset--;
+            if(suffixOffset == 0 || suffixOffset == policy.length) exit(2);
+            suffixOffset--;
+            size_t suffixLength = policy.length - suffixOffset;
+            size_t prefixLength = token->policyId.length;
+            if(prefixLength > SIZE_MAX - (size_t)markerLength ||
+               prefixLength + (size_t)markerLength > SIZE_MAX - suffixLength) exit(2);
+            UA_String policyId = UA_STRING_NULL;
+            check(UA_ByteString_allocBuffer(&policyId,
+                  prefixLength + (size_t)markerLength + suffixLength));
+            if(prefixLength > 0) memcpy(policyId.data, token->policyId.data, prefixLength);
+            memcpy(policyId.data + prefixLength, marker, (size_t)markerLength);
+            memcpy(policyId.data + prefixLength + (size_t)markerLength,
+                   policy.data + suffixOffset, suffixLength);
+            UA_String_clear(&token->policyId);
+            token->policyId = policyId;
+        }
+    }
     UA_ByteString_clear(&cert); UA_ByteString_clear(&key); UA_ByteString_clear(&trust);
     if(atoi(argv[2])) {
         UA_UInt16 wrong = UA_Server_addNamespace(server, "urn:nifi:interop:other");
@@ -91,6 +132,20 @@ int main(int argc, char **argv) {
     }
     UA_UInt16 ns = UA_Server_addNamespace(server, "urn:nifi:interop:tags");
     valueId = addVariable(server, ns, "Value", 0);
+    UA_EUInformation units;
+    UA_EUInformation_init(&units);
+    units.namespaceUri = UA_STRING("http://www.opcfoundation.org/UA/units/un/cefact");
+    units.unitId = 4408652;
+    const int revisedMetadata = access("metadata-revision.flag", F_OK) == 0;
+    units.displayName = UA_LOCALIZEDTEXT("en", revisedMetadata ? "degC updated" : "degC");
+    units.description = UA_LOCALIZEDTEXT("en", revisedMetadata ? "updated Celsius metadata" : "degree Celsius");
+    UA_VariableAttributes unitAttr = UA_VariableAttributes_default;
+    unitAttr.displayName = UA_LOCALIZEDTEXT("en", "EngineeringUnits");
+    unitAttr.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_EUINFORMATION);
+    UA_Variant_setScalar(&unitAttr.value, &units, &UA_TYPES[UA_TYPES_EUINFORMATION]);
+    check(UA_Server_addVariableNode(server, UA_NODEID_STRING(ns, "Value.EngineeringUnits"), valueId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY), UA_QUALIFIEDNAME(0, "EngineeringUnits"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), unitAttr, NULL, NULL));
     FILE *limitFlag = fopen("unadvertised-limit.flag", "r");
     if(limitFlag) {
         fclose(limitFlag);

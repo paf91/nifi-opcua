@@ -1,10 +1,10 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.paf91.nifi</groupId>
-  <artifactId>nifi-opcua-subscriber-bundle</artifactId>
-  <version>1.0.4</version>
+  <artifactId>nifi-opcua-bundle</artifactId>
+  <version>1.0.5-SNAPSHOT</version>
   <packaging>pom</packaging>
-  <name>NiFi OPC UA Subscriber Bundle</name>
+  <name>NiFi OPC UA Bundle</name>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <nifi.version>1.23.2</nifi.version>
@@ -17,6 +17,7 @@
     <netty.version>4.1.139.Final</netty.version>
     <jackson.version>2.18.12</jackson.version>
     <bouncycastle.version>1.86</bouncycastle.version>
+    <guava.version>33.8.0-jre</guava.version>
   </properties>
   <modules>
     <module>processors</module>
@@ -67,6 +68,11 @@
         <groupId>org.bouncycastle</groupId>
         <artifactId>bcutil-jdk18on</artifactId>
         <version>${bouncycastle.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>${guava.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

@@ -58,8 +58,8 @@ def finish_bundle(output):
             temporary = Path(directory)
             packed = temporary / archive.name
             with tarfile.open(packed, 'w:gz') as tar:
-                tar.add(output, arcname='nifi-opcua-subscriber-release',
-                        filter=lambda entry: None if entry.name == 'nifi-opcua-subscriber-release/INCOMPLETE' else entry)
+                tar.add(output, arcname='nifi-opcua-release',
+                        filter=lambda entry: None if entry.name == 'nifi-opcua-release/INCOMPLETE' else entry)
             digest_file = temporary / digest.name
             digest_file.write_text(checksum(packed) + '  ' + archive.name + '\n')
             # Same-filesystem hard links publish complete files without overwriting a path
@@ -86,7 +86,7 @@ def build_targets(pom):
             nifi = props.findtext('m:nifi.version', namespaces=NS)
             java = props.findtext('m:maven.compiler.release', namespaces=NS)
             result.append({'profile': name, 'java': java, 'nifi': nifi,
-                           'bytecode': str(int(java) + 44), 'artifact': f'nifi-opcua-subscriber-{nifi}-{version}.nar'})
+                           'bytecode': str(int(java) + 44), 'artifact': f'nifi-opcua-{nifi}-{version}.nar'})
     if {t['profile'] for t in result} != {'nifi1', 'nifi2'}:
         raise ValueError('Both build profiles must be declared in the root POM')
     return result
@@ -125,7 +125,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='opcua-release-') as directory:
         with tarfile.open(output / 'source.tar.gz') as archive:
             archive.extractall(directory)
-        source = Path(directory) / 'nifi-opcua-subscriber'
+        source = Path(directory) / 'nifi-opcua'
         run(['python3', source / 'scripts/check-project.py', '--root', source], source)
         run(['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-v'], source)
         targets = build_targets(source / 'pom.xml')
@@ -143,6 +143,7 @@ def main():
             image = 'maven:3.9.11-eclipse-temurin-' + java
             run(['docker', 'run', '--rm', '--user', f'{os.getuid()}:{os.getgid()}',
                  '-e', 'MAVEN_CONFIG=/tmp/maven', '-e', 'JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=4',
+                 '-e', 'MAVEN_OPTS=-Xms128m -Xmx512m',
                  '-e', 'OPCUA_OPEN62541_BINARY=/interop/open62541', '-v', str(interop) + ':/interop:ro',
                  '-v', str(source) + ':/work', '-v', str(cache) + ':/tmp/m2', '-w', '/work', image,
                  *arguments], source, log)
@@ -152,12 +153,13 @@ def main():
             dest.mkdir()
             print('Building ' + target['profile'], flush=True)
             with (dest / 'build.log').open('w') as log:
-                image_id = docker(target['java'], ['mvn', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
+                image_id = docker(target['java'], ['mvn', '-s', 'scripts/maven-ci-settings.xml', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
+                    '-DargLine=-Xms128m -Xmx1024m',
                     '-Dproject.build.outputTimestamp=' + epoch, '-P' + target['profile'],
                     '-Dnifi.version=' + target['nifi'], 'clean', 'verify'], log)
             nar = source / 'nar/target' / target['artifact']
             run(['python3', source / 'scripts/verify-interop-tests.py',
-                 source / 'processors/target/surefire-reports'], source)
+                 source / 'processors/target/surefire-reports', '--profile', target['profile']], source)
             run(['python3', source / 'scripts/verify-nar.py', nar, target['bytecode']], source)
             shutil.copy2(nar, dest / nar.name)
             shutil.copytree(source / 'processors/target/surefire-reports', dest / 'surefire-reports')
@@ -166,7 +168,8 @@ def main():
                  '--output', dest / 'dependency-inventory.json'], source)
             metadata['targets'].append(dict(target, sha256=checksum(dest / nar.name), buildImageId=image_id))
         with (output / 'demo-build.log').open('w') as log:
-            docker('8', ['mvn', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
+            docker('8', ['mvn', '-s', 'scripts/maven-ci-settings.xml', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
+                         '-DargLine=-Xms128m -Xmx1024m',
                          '-f', 'demo/pom.xml', 'clean', 'package'], log)
         # Verify the same exported Java sources with the pinned formatter.
         run(['python3', '-c', "import urllib.request; urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/com/google/googlejavaformat/google-java-format/1.24.0/google-java-format-1.24.0-all-deps.jar', '.formatter.jar')"], source)

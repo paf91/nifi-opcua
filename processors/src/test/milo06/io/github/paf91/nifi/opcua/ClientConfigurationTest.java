@@ -239,4 +239,157 @@ class ClientConfigurationTest {
                         .getToken()
                         .getPolicyId());
     }
+
+    static Stream<Object[]> mixedTokenConfigurations() {
+        List<Object[]> cases = new ArrayList<>();
+        for (UnencryptedPasswordPolicy allowance : UnencryptedPasswordPolicy.values())
+            for (String mode : Arrays.asList("None", "Sign", "SignAndEncrypt"))
+                for (boolean reverse : new boolean[] {false, true})
+                    cases.add(new Object[] {allowance, mode, reverse});
+        return cases.stream();
+    }
+
+    @ParameterizedTest(name = "{0} / {1} / reverse={2}")
+    @MethodSource("mixedTokenConfigurations")
+    void realUsernameProviderEncryptsThePreferredTokenInBothOrders(
+            UnencryptedPasswordPolicy allowance, String mode, boolean reverse) throws Exception {
+        String policy = "None".equals(mode) ? "None" : "Basic256Sha256";
+        OpcSecurity security = new OpcSecurity(policy, mode, OpcSecurity.USERNAME, allowance);
+        UserTokenPolicy plain =
+                new UserTokenPolicy(
+                        "plain", UserTokenType.UserName, null, null, SecurityPolicy.None.getUri());
+        UserTokenPolicy encrypted =
+                new UserTokenPolicy(
+                        "encrypted",
+                        UserTokenType.UserName,
+                        null,
+                        null,
+                        SecurityPolicy.Basic256Sha256.getUri());
+        EndpointDescription endpoint =
+                endpoint(
+                        policy,
+                        mode,
+                        reverse
+                                ? new UserTokenPolicy[] {encrypted, plain}
+                                : new UserTokenPolicy[] {plain, encrypted});
+        ClientCertificateValidator validator = mock(ClientCertificateValidator.class);
+        ClientIdentity identity =
+                security.requiresClientIdentity()
+                        ? new ClientIdentity(
+                                key, new X509Certificate[] {certificate}, "urn:test:server")
+                        : null;
+        OpcUaClientConfig config = config(settings(security, null), endpoint, identity, validator);
+        UserNameIdentityToken token =
+                (UserNameIdentityToken)
+                        config.getIdentityProvider().getIdentityToken(endpoint, nonce).getToken();
+        assertEquals("encrypted", token.getPolicyId());
+        assertEquals("user", token.getUserName());
+        assertNotNull(token.getEncryptionAlgorithm());
+        assertFalse(
+                Arrays.equals(
+                        "test-password".getBytes(StandardCharsets.UTF_8),
+                        token.getPassword().bytes()));
+        assertEncryptedPassword(token);
+        if ("None".equals(mode))
+            verify(validator)
+                    .validateCertificateChain(
+                            eq(Collections.singletonList(certificate)),
+                            eq("urn:test:server"),
+                            eq("localhost"));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(UnencryptedPasswordPolicy.class)
+    void failedTrustNeverFallsBackToTheAdvertisedPlaintextToken(UnencryptedPasswordPolicy allowance)
+            throws Exception {
+        OpcSecurity security = new OpcSecurity("None", "None", OpcSecurity.USERNAME, allowance);
+        EndpointDescription endpoint =
+                endpoint(
+                        "None",
+                        "None",
+                        new UserTokenPolicy(
+                                "plain",
+                                UserTokenType.UserName,
+                                null,
+                                null,
+                                SecurityPolicy.None.getUri()),
+                        new UserTokenPolicy(
+                                "encrypted",
+                                UserTokenType.UserName,
+                                null,
+                                null,
+                                SecurityPolicy.Basic256Sha256.getUri()));
+        ClientCertificateValidator validator = mock(ClientCertificateValidator.class);
+        UaException marker = new UaException(StatusCodes.Bad_CertificateUntrusted, "trust marker");
+        doThrow(marker)
+                .when(validator)
+                .validateCertificateChain(
+                        eq(Collections.singletonList(certificate)),
+                        eq("urn:test:server"),
+                        eq("localhost"));
+        OpcUaClientConfig config = config(settings(security, null), endpoint, null, validator);
+        UaException failure =
+                assertThrows(
+                        UaException.class,
+                        () -> config.getIdentityProvider().getIdentityToken(endpoint, nonce));
+        assertEquals(StatusCodes.Bad_CertificateUntrusted, failure.getStatusCode().getValue());
+        verify(validator, times(1))
+                .validateCertificateChain(
+                        eq(Collections.singletonList(certificate)),
+                        eq("urn:test:server"),
+                        eq("localhost"));
+        assertEquals("encrypted", security.userToken(endpoint).getPolicyId());
+    }
+
+    @Test
+    void disablingCertificateValidationRetainsUsernameTokenEncryption() throws Exception {
+        OpcSecurity security =
+                new OpcSecurity(
+                        "None", "None", OpcSecurity.USERNAME, UnencryptedPasswordPolicy.ALWAYS);
+        EndpointDescription endpoint =
+                endpoint(
+                        "None",
+                        "None",
+                        new UserTokenPolicy(
+                                "plain",
+                                UserTokenType.UserName,
+                                null,
+                                null,
+                                SecurityPolicy.None.getUri()),
+                        new UserTokenPolicy(
+                                "encrypted",
+                                UserTokenType.UserName,
+                                null,
+                                null,
+                                SecurityPolicy.Basic256Sha256.getUri()));
+        OpcUaClientConfig config =
+                config(
+                        settings(security, null),
+                        endpoint,
+                        null,
+                        OpcConnection.serverValidator(ServerCertificateValidation.NONE, null));
+        UserNameIdentityToken token =
+                (UserNameIdentityToken)
+                        config.getIdentityProvider().getIdentityToken(endpoint, nonce).getToken();
+        assertEquals("encrypted", token.getPolicyId());
+        assertNotNull(token.getEncryptionAlgorithm());
+        assertEncryptedPassword(token);
+    }
+
+    private static void assertEncryptedPassword(UserNameIdentityToken token) throws Exception {
+        javax.crypto.Cipher cipher =
+                javax.crypto.Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding");
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key.getPrivate());
+        java.nio.ByteBuffer plaintext =
+                java.nio.ByteBuffer.wrap(cipher.doFinal(token.getPassword().bytes()))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        byte[] password = "test-password".getBytes(StandardCharsets.UTF_8);
+        assertEquals(password.length + nonce.length(), plaintext.getInt());
+        byte[] actualPassword = new byte[password.length];
+        plaintext.get(actualPassword);
+        assertArrayEquals(password, actualPassword);
+        byte[] actualNonce = new byte[nonce.length()];
+        plaintext.get(actualNonce);
+        assertArrayEquals(nonce.bytes(), actualNonce);
+    }
 }

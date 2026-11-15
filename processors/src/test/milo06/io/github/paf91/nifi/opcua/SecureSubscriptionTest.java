@@ -37,6 +37,7 @@ class SecureSubscriptionTest {
     X509Certificate clientCert, serverCert;
     KeyPair clientKey;
     String endpoint;
+    boolean mixedUsernameTokens;
 
     @BeforeEach
     void startServer() throws Exception {
@@ -97,7 +98,7 @@ class SecureSubscriptionTest {
                             MessageSecurityMode.Sign,
                             MessageSecurityMode.SignAndEncrypt)) {
                 if ("None".equals(policy) != (mode == MessageSecurityMode.None)) continue;
-                endpoints.add(
+                EndpointConfiguration.Builder configured =
                         builder.copy()
                                 .setSecurityPolicy(SecurityPolicy.valueOf(policy))
                                 .setSecurityMode(mode)
@@ -110,8 +111,16 @@ class SecureSubscriptionTest {
                                                 null,
                                                 usernameTokenPolicy == null
                                                         ? SecurityPolicy.valueOf(policy).getUri()
-                                                        : usernameTokenPolicy))
-                                .build());
+                                                        : usernameTokenPolicy));
+                if (mixedUsernameTokens)
+                    configured.addTokenPolicy(
+                            new UserTokenPolicy(
+                                    "plain-username",
+                                    UserTokenType.UserName,
+                                    null,
+                                    null,
+                                    SecurityPolicy.None.getUri()));
+                endpoints.add(configured.build());
             }
         }
         server =
@@ -332,12 +341,12 @@ class SecureSubscriptionTest {
 
     @Test
     void logsRejectedNodeAndStatusFromRealSecureSubscription() {
-        TestRunner runner = ProcessorTest.configured(new SubscribeOpcUa());
-        runner.setProperty(SubscribeOpcUa.ENDPOINT, endpoint);
-        runner.setProperty(SubscribeOpcUa.CERTIFICATE, dir.resolve("client.der").toString());
-        runner.setProperty(SubscribeOpcUa.PRIVATE_KEY, dir.resolve("client.pem").toString());
-        runner.setProperty(SubscribeOpcUa.PKI, dir.resolve("pki").toString());
-        runner.setProperty(SubscribeOpcUa.PASSWORD, "test-password");
+        TestRunner runner = ProcessorTest.configured(new ConsumeOPCUA());
+        runner.setProperty(ConsumeOPCUA.ENDPOINT, endpoint);
+        runner.setProperty(ConsumeOPCUA.CERTIFICATE, dir.resolve("client.der").toString());
+        runner.setProperty(ConsumeOPCUA.PRIVATE_KEY, dir.resolve("client.pem").toString());
+        runner.setProperty(ConsumeOPCUA.PKI, dir.resolve("pki").toString());
+        runner.setProperty(ConsumeOPCUA.PASSWORD, "test-password");
         runner.setProperty("DemoSwitch", "ns=2;s=does-not-exist");
         try {
             runner.run(1, false, true);
@@ -398,29 +407,28 @@ class SecureSubscriptionTest {
 
     @Test
     void emitsFlowFilesFromRealSecureSubscription() throws Exception {
-        org.apache.nifi.util.TestRunner runner = ProcessorTest.configured(new SubscribeOpcUa());
-        runner.setProperty(SubscribeOpcUa.ENDPOINT, endpoint);
-        runner.setProperty(SubscribeOpcUa.CERTIFICATE, dir.resolve("client.der").toString());
-        runner.setProperty(SubscribeOpcUa.PRIVATE_KEY, dir.resolve("client.pem").toString());
-        runner.setProperty(SubscribeOpcUa.PKI, dir.resolve("pki").toString());
-        runner.setProperty(SubscribeOpcUa.PASSWORD, "test-password");
-        runner.setProperty(SubscribeOpcUa.PUBLISHING, "100");
+        org.apache.nifi.util.TestRunner runner = ProcessorTest.configured(new ConsumeOPCUA());
+        runner.setProperty(ConsumeOPCUA.ENDPOINT, endpoint);
+        runner.setProperty(ConsumeOPCUA.CERTIFICATE, dir.resolve("client.der").toString());
+        runner.setProperty(ConsumeOPCUA.PRIVATE_KEY, dir.resolve("client.pem").toString());
+        runner.setProperty(ConsumeOPCUA.PKI, dir.resolve("pki").toString());
+        runner.setProperty(ConsumeOPCUA.PASSWORD, "test-password");
+        runner.setProperty(ConsumeOPCUA.PUBLISHING, "100");
         runner.removeProperty("DemoSwitch");
         runner.setProperty("serverTime", "ns=0;i=2258");
         try {
             runner.run(1, false, true);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-            while (runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS).isEmpty()
+            while (runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS).isEmpty()
                     && System.nanoTime() < deadline) {
                 Thread.sleep(100);
                 runner.run(1, false, false);
             }
-            assertFalse(runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS).isEmpty());
+            assertFalse(runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS).isEmpty());
             assertTrue(
                     new String(
                                     runner.getContentAsByteArray(
-                                            runner.getFlowFilesForRelationship(
-                                                            SubscribeOpcUa.SUCCESS)
+                                            runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                                                     .get(0)),
                                     java.nio.charset.StandardCharsets.UTF_8)
                             .contains("serverTime"));
@@ -435,16 +443,16 @@ class SecureSubscriptionTest {
                 Arrays.asList(
                         "serverTime | ns=0;i=2258\nserverState | ns=0;i=2259",
                         "[{\"alias\":\"serverTime\",\"nodeId\":\"ns=0;i=2258\",\"samplingIntervalMs\":100},{\"alias\":\"serverState\",\"nodeId\":\"ns=0;i=2259\"}]")) {
-            org.apache.nifi.util.TestRunner runner = ProcessorTest.configured(new SubscribeOpcUa());
-            runner.setProperty(SubscribeOpcUa.ENDPOINT, endpoint);
-            runner.setProperty(SubscribeOpcUa.CERTIFICATE, dir.resolve("client.der").toString());
-            runner.setProperty(SubscribeOpcUa.PRIVATE_KEY, dir.resolve("client.pem").toString());
-            runner.setProperty(SubscribeOpcUa.PKI, dir.resolve("pki").toString());
-            runner.setProperty(SubscribeOpcUa.PASSWORD, "test-password");
-            runner.setProperty(SubscribeOpcUa.PUBLISHING, "100");
-            runner.removeProperty(SubscribeOpcUa.APPLICATION_URI);
+            org.apache.nifi.util.TestRunner runner = ProcessorTest.configured(new ConsumeOPCUA());
+            runner.setProperty(ConsumeOPCUA.ENDPOINT, endpoint);
+            runner.setProperty(ConsumeOPCUA.CERTIFICATE, dir.resolve("client.der").toString());
+            runner.setProperty(ConsumeOPCUA.PRIVATE_KEY, dir.resolve("client.pem").toString());
+            runner.setProperty(ConsumeOPCUA.PKI, dir.resolve("pki").toString());
+            runner.setProperty(ConsumeOPCUA.PASSWORD, "test-password");
+            runner.setProperty(ConsumeOPCUA.PUBLISHING, "100");
+            runner.removeProperty(ConsumeOPCUA.APPLICATION_URI);
             runner.removeProperty("DemoSwitch");
-            runner.setProperty(SubscribeOpcUa.TAG_LIST, tags);
+            runner.setProperty(ConsumeOPCUA.TAG_LIST, tags);
             Set<String> observed = new HashSet<>();
             try {
                 runner.assertValid();
@@ -454,7 +462,7 @@ class SecureSubscriptionTest {
                     Thread.sleep(100);
                     runner.run(1, false, false);
                     for (org.apache.nifi.util.MockFlowFile flow :
-                            runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)) {
+                            runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)) {
                         com.fasterxml.jackson.databind.JsonNode records =
                                 new com.fasterxml.jackson.databind.ObjectMapper()
                                         .readTree(runner.getContentAsByteArray(flow));
@@ -543,16 +551,16 @@ class SecureSubscriptionTest {
 
     @Test
     void recoversAfterServerRestart() throws Exception {
-        SubscribeOpcUa processor = new SubscribeOpcUa();
+        ConsumeOPCUA processor = new ConsumeOPCUA();
         TestRunner r = ProcessorTest.configured(processor);
-        r.setProperty(SubscribeOpcUa.ENDPOINT, endpoint);
-        r.setProperty(SubscribeOpcUa.CERTIFICATE, dir.resolve("client.der").toString());
-        r.setProperty(SubscribeOpcUa.PRIVATE_KEY, dir.resolve("client.pem").toString());
-        r.setProperty(SubscribeOpcUa.PKI, dir.resolve("pki").toString());
-        r.setProperty(SubscribeOpcUa.PASSWORD, "test-password");
-        r.setProperty(SubscribeOpcUa.PUBLISHING, "100");
-        r.setProperty(SubscribeOpcUa.RETRY, "500");
-        r.setProperty(SubscribeOpcUa.TIMEOUT, "1000");
+        r.setProperty(ConsumeOPCUA.ENDPOINT, endpoint);
+        r.setProperty(ConsumeOPCUA.CERTIFICATE, dir.resolve("client.der").toString());
+        r.setProperty(ConsumeOPCUA.PRIVATE_KEY, dir.resolve("client.pem").toString());
+        r.setProperty(ConsumeOPCUA.PKI, dir.resolve("pki").toString());
+        r.setProperty(ConsumeOPCUA.PASSWORD, "test-password");
+        r.setProperty(ConsumeOPCUA.PUBLISHING, "100");
+        r.setProperty(ConsumeOPCUA.RETRY, "500");
+        r.setProperty(ConsumeOPCUA.TIMEOUT, "1000");
         r.removeProperty("DemoSwitch");
         r.setProperty("time", "ns=0;i=2258");
         try {
@@ -569,7 +577,7 @@ class SecureSubscriptionTest {
             while (!fresh && System.nanoTime() < deadline) {
                 r.clearTransferState();
                 r.run(1, false, false);
-                for (MockFlowFile f : r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)) {
+                for (MockFlowFile f : r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)) {
                     for (JsonNode record :
                             new ObjectMapper().readTree(r.getContentAsByteArray(f))) {
                         if (record.get("value").isTextual()
@@ -658,5 +666,64 @@ class SecureSubscriptionTest {
                                         () -> {}));
         assertTrue(failure.toString().contains("does not contain"), failure.toString());
         assertTrue(server.getSubscriptions().isEmpty());
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(UnencryptedPasswordPolicy.class)
+    void mixedNoneChannelTokensRequireTrustUnlessCertificateValidationIsDisabled(
+            UnencryptedPasswordPolicy allowance) throws Exception {
+        closeServer();
+        mixedUsernameTokens = true;
+        startServer(SecurityPolicy.Basic256Sha256.getUri());
+        OpcSecurity security = new OpcSecurity("None", "None", OpcSecurity.USERNAME, allowance);
+        for (ServerCertificateValidation validation :
+                Arrays.asList(
+                        ServerCertificateValidation.FULL,
+                        ServerCertificateValidation.CERTIFICATE)) {
+            OpcSettings settings = noneChannelSettings(security, validation);
+            ConnectionDiagnostics report = new ConnectionDiagnostics();
+            IllegalArgumentException failure =
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () ->
+                                    new OpcConnection(
+                                            settings,
+                                            (tag, value) -> {},
+                                            () -> {},
+                                            () -> {},
+                                            new ConnectionAttempt(),
+                                            report));
+            assertTrue(failure.getMessage().contains("PKI Directory or Server Truststore File"));
+            assertEquals("Configuring server trust", report.snapshot().get("stage"));
+        }
+        BlockingQueue<DataValue> values = new LinkedBlockingQueue<>();
+        try (OpcConnection connection =
+                new OpcConnection(
+                        noneChannelSettings(security, ServerCertificateValidation.NONE),
+                        (tag, value) -> values.offer(value),
+                        () -> {},
+                        () -> {})) {
+            DataValue first = values.poll(5, TimeUnit.SECONDS);
+            assertNotNull(first);
+            assertTrue(first.getStatusCode().isGood());
+        }
+    }
+
+    private OpcSettings noneChannelSettings(
+            OpcSecurity security, ServerCertificateValidation validation) {
+        return new OpcSettings(
+                endpoint,
+                null,
+                null,
+                null,
+                "",
+                null,
+                "user",
+                "test-password",
+                100,
+                5000,
+                Collections.singletonList(TagDefinition.parse("time", "ns=0;i=2258", 100, 10)),
+                security,
+                validation);
     }
 }

@@ -13,6 +13,7 @@ import org.eclipse.milo.opcua.stack.core.types.structured.*;
 import org.eclipse.milo.opcua.stack.transport.client.OpcClientTransport;
 
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 
 /** Retains Milo's subscription bookkeeping and batching while bounding its blocking setup calls. */
@@ -68,8 +69,13 @@ class BoundedOpcUaClient extends OpcUaClient {
     public CompletableFuture<UaResponseMessageType> sendRequestAsync(UaRequestMessageType request) {
         // A session can arrive on another thread after Stop. Fence at the actual send boundary
         // as well as before each blocking operation. Keep deletion/close requests available.
-        if (request instanceof CreateMonitoredItemsRequest || request instanceof ReadRequest)
-            return attempt.callIfActive(() -> super.sendRequestAsync(request));
+        if (request instanceof CreateMonitoredItemsRequest || request instanceof ReadRequest) {
+            try {
+                return attempt.callIfActive(() -> super.sendRequestAsync(request));
+            } catch (CancellationException e) {
+                return CompletableFuture.failedFuture(e);
+            }
+        }
         return super.sendRequestAsync(request);
     }
 }

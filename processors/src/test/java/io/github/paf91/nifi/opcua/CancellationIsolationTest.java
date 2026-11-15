@@ -22,8 +22,8 @@ class CancellationIsolationTest {
         for (boolean revoke : Arrays.asList(false, true)) {
             AtomicInteger closed = new AtomicInteger();
             AtomicReference<ConnectionAttempt> attempt = new AtomicReference<>();
-            SubscribeOpcUa processor =
-                    new SubscribeOpcUa() {
+            ConsumeOPCUA processor =
+                    new ConsumeOPCUA() {
                         @Override
                         protected AutoCloseable openConnection(
                                 ProcessContext context, ConnectionAttempt generation) {
@@ -87,15 +87,15 @@ class CancellationIsolationTest {
     void aConnectionReturningAfterCancellationIsClosedWithoutBeingPublished() throws Exception {
         CountDownLatch opening = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicInteger closed = new AtomicInteger();
-        SubscribeOpcUa processor =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA processor =
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable openConnection(
                             ProcessContext context, ConnectionAttempt generation) throws Exception {
                         opening.countDown();
                         assertTrue(release.await(10, TimeUnit.SECONDS));
-                        return closed::incrementAndGet; // Simulate an opener that completes despite
-                        // cancellation.
+                        // Simulate a connection opener finishing after cancellation.
+                        return closed::incrementAndGet;
                     }
                 };
         TestRunner runner = ProcessorTest.configured(processor);
@@ -132,10 +132,11 @@ class CancellationIsolationTest {
     @Test
     void cancellationDuringEncodingFencesTheFinalEnqueue() throws Exception {
         CountDownLatch encoding = new CountDownLatch(1), release = new CountDownLatch(1);
-        SubscribeOpcUa processor =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA processor =
+                new ConsumeOPCUA() {
                     @Override
-                    byte[] encodeNotification(TagDefinition tag, DataValue value, int limit)
+                    byte[] encodeNotification(
+                            TagDefinition tag, DataValue value, int limit, OutputSettings output)
                             throws java.io.IOException {
                         encoding.countDown();
                         try {
@@ -144,7 +145,7 @@ class CancellationIsolationTest {
                             Thread.currentThread().interrupt();
                             throw new java.io.IOException(e);
                         }
-                        return super.encodeNotification(tag, value, limit);
+                        return super.encodeNotification(tag, value, limit, output);
                     }
                 };
         TestRunner runner = ProcessorTest.configured(processor);

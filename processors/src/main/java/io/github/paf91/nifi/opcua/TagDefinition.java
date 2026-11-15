@@ -17,6 +17,8 @@ import java.util.Set;
 final class TagDefinition {
     private final String alias;
     private final NodeId nodeId;
+    private volatile String nodeIdText;
+    private TagMetadata metadata = TagMetadata.EMPTY;
     private final TagAddress address;
     private final double samplingIntervalMs;
     private final int queueSize;
@@ -72,6 +74,24 @@ final class TagDefinition {
 
     TagAddress address() {
         return address;
+    }
+
+    String nodeIdText(int limit) throws NotificationJson.RecordTooLargeException {
+        // Validate before materializing an arbitrarily large String/ByteString identifier.
+        NotificationJson.checkNodeIdSize(nodeId(), limit);
+        String cached = nodeIdText;
+        if (cached == null) nodeIdText = cached = nodeId().toParseableString();
+        return cached;
+    }
+
+    TagMetadata metadata() {
+        return metadata;
+    }
+
+    TagDefinition withMetadata(TagMetadata value) {
+        TagDefinition copy = resolved(nodeId());
+        copy.metadata = value;
+        return copy;
     }
 
     TagDefinition resolved(NodeId id) {

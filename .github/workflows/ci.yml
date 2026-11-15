@@ -13,6 +13,7 @@ concurrency:
 jobs:
   repository:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -25,7 +26,9 @@ jobs:
       - run: python3 -m unittest discover -s tests -v
       - run: python3 scripts/format-java.py --check
   build:
+    name: 'build (${{ matrix.java }}, ${{ matrix.profile }}, ${{ matrix.nifi }}, ${{ matrix.bytecode }})'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -34,10 +37,17 @@ jobs:
             profile: nifi1
             nifi: 1.23.2
             bytecode: 52
+            artifact: nifi1-artifacts
           - java: '21'
             profile: nifi2
             nifi: 2.12.0
             bytecode: 65
+            artifact: nifi2-artifacts
+          - java: '25'
+            profile: nifi2
+            nifi: 2.12.0
+            bytecode: 65
+            artifact: nifi2-java25-artifacts
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -56,17 +66,20 @@ jobs:
           set -o pipefail
           mkdir -p dist/ci-logs
           docker run --rm --user "$(id -u):$(id -g)" -e MAVEN_CONFIG=/tmp/maven \
+            -e 'MAVEN_OPTS=-Xms128m -Xmx512m' \
             -e OPCUA_OPEN62541_BINARY=/work/dist/open62541/open62541 \
             -v "$PWD:/work" -w /work "maven:3.9.11-eclipse-temurin-$JAVA_TARGET" \
-            mvn -e -B -ntp -Dmaven.repo.local=/tmp/m2/repository "-P$PROFILE" "-Dnifi.version=$NIFI_TARGET" clean verify \
+            mvn -s scripts/maven-ci-settings.xml -e -B -ntp -Dmaven.repo.local=/tmp/m2/repository '-DargLine=-Xms128m -Xmx1024m' \
+            "-P$PROFILE" "-Dnifi.version=$NIFI_TARGET" clean verify \
             2>&1 | tee "dist/ci-logs/$PROFILE-build.log"
       - name: Verify NAR and generate inventory
         env:
           NIFI_TARGET: ${{ matrix.nifi }}
+          PROFILE: ${{ matrix.profile }}
           BYTECODE: ${{ matrix.bytecode }}
         run: |
-          NAR="nar/target/nifi-opcua-subscriber-$NIFI_TARGET-1.0.4.nar"
-          python3 scripts/verify-interop-tests.py processors/target/surefire-reports
+          NAR="nar/target/nifi-opcua-$NIFI_TARGET-1.0.5-SNAPSHOT.nar"
+          python3 scripts/verify-interop-tests.py processors/target/surefire-reports --profile "$PROFILE"
           python3 scripts/verify-nar.py "$NAR" "$BYTECODE"
           python3 scripts/nar-inventory.py "$NAR" --output nar/target/dependency-inventory.json
           cd nar/target
@@ -79,14 +92,16 @@ jobs:
           set -o pipefail
           mkdir -p dist/ci-logs
           docker run --rm --user "$(id -u):$(id -g)" -e MAVEN_CONFIG=/tmp/maven \
+            -e 'MAVEN_OPTS=-Xms128m -Xmx512m' \
             -v "$PWD:/work" -w /work maven:3.9.11-eclipse-temurin-8 \
-            mvn -e -B -ntp -Dmaven.repo.local=/tmp/m2/repository -f demo/pom.xml clean package \
+            mvn -s scripts/maven-ci-settings.xml -e -B -ntp -Dmaven.repo.local=/tmp/m2/repository '-DargLine=-Xms128m -Xmx1024m' \
+            -f demo/pom.xml clean package \
             2>&1 | tee dist/ci-logs/demo-build.log
       - name: Upload NAR and test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ matrix.profile }}-artifacts
+          name: ${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 14
           path: |

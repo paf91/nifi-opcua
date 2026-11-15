@@ -12,6 +12,48 @@ class EncodingPerformanceTest {
     private static volatile long consumed;
 
     @Test
+    void primitiveArraysAvoidPerElementObjectSerializationAndBoxing() throws Exception {
+        double[] numbers = new double[1024];
+        for (int i = 0; i < numbers.length; i++) numbers[i] = i + 0.25;
+        DataValue value = new DataValue(new Variant(numbers));
+        for (int i = 0; i < 3000; i++)
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 16384).length;
+        long before = MemoryBoundsTest.allocatedBytes();
+        for (int i = 0; i < 3000; i++)
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 16384).length;
+        long perRecord = (MemoryBoundsTest.allocatedBytes() - before) / 3000;
+        System.out.println("PERFORMANCE double-array-1024 allocatedBytesPerRecord=" + perRecord);
+        assertTrue(
+                perRecord < 170000, "Array encoding allocated " + perRecord + " bytes per record");
+    }
+
+    @Test
+    void compactProjectionAvoidsMetadataAndTimestampAllocation() throws Exception {
+        OutputSettings compact =
+                new OutputSettings(
+                        OutputSettings.COMPACT_FIELDS, "JSON Array", "ISO-8601", false, 0);
+        DataValue value = new DataValue(new Variant(42.5), StatusCode.GOOD, DateTime.now(), null);
+        for (int i = 0; i < 20000; i++) {
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 4096).length;
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 4096, compact).length;
+        }
+        long before = MemoryBoundsTest.allocatedBytes();
+        for (int i = 0; i < 20000; i++)
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 4096).length;
+        long full = MemoryBoundsTest.allocatedBytes() - before;
+        before = MemoryBoundsTest.allocatedBytes();
+        for (int i = 0; i < 20000; i++)
+            consumed += NotificationJson.encode(MemoryBoundsTest.TAG, value, 4096, compact).length;
+        long projected = MemoryBoundsTest.allocatedBytes() - before;
+        System.out.println(
+                "PERFORMANCE projection fullBytesPerRecord="
+                        + full / 20000
+                        + " compactBytesPerRecord="
+                        + projected / 20000);
+        assertTrue(projected < full * 0.8, "Projection should avoid computing omitted fields");
+    }
+
+    @Test
     void diagnosticsDoNotFormatTimestampsOnEveryCallback() {
         ConnectionDiagnostics diagnostics = new ConnectionDiagnostics();
         DataValue value = new DataValue(new Variant(42));

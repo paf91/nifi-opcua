@@ -9,6 +9,7 @@ import org.eclipse.milo.opcua.sdk.client.*;
 import org.eclipse.milo.opcua.sdk.client.subscriptions.*;
 import org.eclipse.milo.opcua.stack.core.StatusCodes;
 import org.eclipse.milo.opcua.stack.core.UaException;
+import org.eclipse.milo.opcua.stack.core.types.UaRequestMessageType;
 import org.eclipse.milo.opcua.stack.core.types.UaResponseMessageType;
 import org.eclipse.milo.opcua.stack.core.types.builtin.*;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.UserTokenType;
@@ -241,17 +242,28 @@ class BoundedMonitoredItemSetupTest {
     @Test
     void sendBoundaryRejectsLateSetupButStillAllowsCleanupAfterCancellation() {
         attempt.cancel();
-        assertThrows(
-                CancellationException.class,
-                () ->
-                        client.sendRequestAsync(
-                                new CreateMonitoredItemsRequest(
-                                        null,
-                                        uint(1),
-                                        org.eclipse.milo.opcua.stack.core.types.enumerated
-                                                .TimestampsToReturn.Both,
-                                        new MonitoredItemCreateRequest[0])));
+        for (UaRequestMessageType request :
+                new UaRequestMessageType[] {
+                    new CreateMonitoredItemsRequest(
+                            null,
+                            uint(1),
+                            org.eclipse.milo.opcua.stack.core.types.enumerated.TimestampsToReturn
+                                    .Both,
+                            new MonitoredItemCreateRequest[0]),
+                    new ReadRequest(
+                            null,
+                            0.0,
+                            org.eclipse.milo.opcua.stack.core.types.enumerated.TimestampsToReturn
+                                    .Both,
+                            new ReadValueId[0])
+                }) {
+            CompletableFuture<UaResponseMessageType> response =
+                    assertDoesNotThrow(() -> client.sendRequestAsync(request));
+            assertTrue(response.isDone());
+            assertThrows(CancellationException.class, response::join);
+        }
         verify(transport, never()).sendRequestMessage(any(CreateMonitoredItemsRequest.class));
+        verify(transport, never()).sendRequestMessage(any(ReadRequest.class));
         DeleteSubscriptionsRequest cleanup =
                 new DeleteSubscriptionsRequest(
                         null,

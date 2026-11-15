@@ -2,10 +2,10 @@
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>io.github.paf91.nifi</groupId>
-    <artifactId>nifi-opcua-subscriber-bundle</artifactId>
-    <version>1.0.4</version>
+    <artifactId>nifi-opcua-bundle</artifactId>
+    <version>1.0.5-SNAPSHOT</version>
   </parent>
-  <artifactId>nifi-opcua-subscriber-nar</artifactId>
+  <artifactId>nifi-opcua-nar</artifactId>
   <packaging>nar</packaging>
   <dependencies>
     <dependency>
@@ -22,12 +22,12 @@
     </dependency>
     <dependency>
       <groupId>io.github.paf91.nifi</groupId>
-      <artifactId>nifi-opcua-subscriber-processors</artifactId>
+      <artifactId>nifi-opcua-processors</artifactId>
       <version>${project.version}</version>
     </dependency>
   </dependencies>
   <build>
-    <finalName>nifi-opcua-subscriber-${nifi.version}-${project.version}</finalName>
+    <finalName>nifi-opcua-${nifi.version}-${project.version}</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.nifi</groupId>

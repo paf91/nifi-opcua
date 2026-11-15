@@ -18,7 +18,9 @@ class MemoryBoundsTest {
     static final TagDefinition TAG = TagDefinition.parse("memory", "ns=2;s=Memory", 100, 10);
 
     static long allocatedBytes() {
-        ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+        java.lang.management.ThreadMXBean platform = ManagementFactory.getThreadMXBean();
+        org.junit.jupiter.api.Assumptions.assumeTrue(platform instanceof ThreadMXBean);
+        ThreadMXBean bean = (ThreadMXBean) platform;
         org.junit.jupiter.api.Assumptions.assumeTrue(bean.isThreadAllocatedMemorySupported());
         if (!bean.isThreadAllocatedMemoryEnabled()) bean.setThreadAllocatedMemoryEnabled(true);
         return bean.getThreadAllocatedBytes(Thread.currentThread().getId());
@@ -119,10 +121,11 @@ class MemoryBoundsTest {
 
     @Test
     void countAndByteSaturationSkipEncodingEntirely() {
-        SubscribeOpcUa processor =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA processor =
+                new ConsumeOPCUA() {
                     @Override
-                    byte[] encodeNotification(TagDefinition tag, DataValue value, int limit) {
+                    byte[] encodeNotification(
+                            TagDefinition tag, DataValue value, int limit, OutputSettings output) {
                         throw new AssertionError("Full buffer must reject before encoding");
                     }
                 };
@@ -138,7 +141,7 @@ class MemoryBoundsTest {
 
     @Test
     void discardedLargeUpdatesHaveSmallAllocationCost() {
-        SubscribeOpcUa processor = new SubscribeOpcUa();
+        ConsumeOPCUA processor = new ConsumeOPCUA();
         NotificationBuffer buffer = new NotificationBuffer(1, 2 * 1024 * 1024, 1024 * 1024);
         assertTrue(buffer.offer(new byte[] {1}));
         DataValue value = new DataValue(new Variant(new ByteString(new byte[512 * 1024])));
@@ -154,7 +157,7 @@ class MemoryBoundsTest {
     @Test
     void partialByteCapacityBoundsEncodingAndCountsOverflowWithoutAnEncodingError()
             throws Exception {
-        SubscribeOpcUa processor = new SubscribeOpcUa();
+        ConsumeOPCUA processor = new ConsumeOPCUA();
         org.apache.nifi.util.TestRunner runner = ProcessorTest.configured(processor);
         NotificationBuffer buffer = new NotificationBuffer(10, 2048, 1024);
         assertTrue(buffer.offer(new byte[1024]));

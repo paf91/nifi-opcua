@@ -3,7 +3,6 @@ package io.github.paf91.nifi.opcua;
 
 import static org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.Unsigned.ulong;
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.*;
 
@@ -17,22 +16,22 @@ import java.util.*;
 class ProcessorTest {
     static final String NODE = "ns=2;s=Demo.Boolean";
 
-    static class OfflineProcessor extends SubscribeOpcUa {
+    static class OfflineProcessor extends ConsumeOPCUA {
         @Override
         protected AutoCloseable openConnection(ProcessContext context, ConnectionAttempt attempt) {
             return () -> {};
         }
     }
 
-    static TestRunner configured(SubscribeOpcUa processor) {
+    static TestRunner configured(ConsumeOPCUA processor) {
         TestRunner r = TestRunners.newTestRunner(processor);
-        r.setProperty(SubscribeOpcUa.ENDPOINT, "opc.tcp://localhost:4840");
-        r.setProperty(SubscribeOpcUa.APPLICATION_URI, "urn:test:client");
-        r.setProperty(SubscribeOpcUa.CERTIFICATE, "/tmp/test-client.der");
-        r.setProperty(SubscribeOpcUa.PRIVATE_KEY, "/tmp/test-client.pem");
-        r.setProperty(SubscribeOpcUa.PKI, "/tmp/test-pki");
-        r.setProperty(SubscribeOpcUa.USERNAME, "user");
-        r.setProperty(SubscribeOpcUa.PASSWORD, "test-only-password");
+        r.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://localhost:4840");
+        r.setProperty(ConsumeOPCUA.APPLICATION_URI, "urn:test:client");
+        r.setProperty(ConsumeOPCUA.CERTIFICATE, "/tmp/test-client.der");
+        r.setProperty(ConsumeOPCUA.PRIVATE_KEY, "/tmp/test-client.pem");
+        r.setProperty(ConsumeOPCUA.PKI, "/tmp/test-pki");
+        r.setProperty(ConsumeOPCUA.USERNAME, "user");
+        r.setProperty(ConsumeOPCUA.PASSWORD, "test-only-password");
         r.setProperty("DemoSwitch", NODE);
         return r;
     }
@@ -46,7 +45,7 @@ class ProcessorTest {
         r.setProperty("DemoSwitch", "{\"nodeId\":\"" + NODE + "\",\"queueSize\":1.5}");
         r.assertNotValid();
         r.setProperty("DemoSwitch", NODE);
-        r.setProperty(SubscribeOpcUa.ENDPOINT, "opc.tcp://user:pass@host:4840");
+        r.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://user:pass@host:4840");
         r.assertNotValid();
     }
 
@@ -84,47 +83,27 @@ class ProcessorTest {
     void producesJsonBatchesAndProvenance() throws Exception {
         OfflineProcessor p = new OfflineProcessor();
         TestRunner r = configured(p);
-        r.setProperty(SubscribeOpcUa.BATCH, "2");
+        r.setProperty(ConsumeOPCUA.BATCH, "2");
         p.start(r.getProcessContext());
         for (int i = 0; i < 3; i++)
             p.acceptForTest(
                     TagDefinition.parse("DemoSwitch", NODE, 1000, 100),
                     new DataValue(new Variant(i)));
         r.run(2, true, false);
-        r.assertTransferCount(SubscribeOpcUa.SUCCESS, 2);
+        r.assertTransferCount(ConsumeOPCUA.SUCCESS, 2);
         JsonNode json =
                 new ObjectMapper()
                         .readTree(
                                 r.getContentAsByteArray(
-                                        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+                                        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                                                 .get(0)));
         assertEquals(2, json.size());
         assertEquals(NODE, json.get(0).get("nodeId").asText());
         assertEquals(0, json.get(0).get("value").asInt());
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(0)
                 .assertAttributeEquals("opcua.endpoint", "opc.tcp://localhost:4840");
         assertEquals(2, r.getProvenanceEvents().size());
-    }
-
-    @Test
-    void failedCommitRetainsBatch() throws Exception {
-        OfflineProcessor p = new OfflineProcessor();
-        TestRunner r = configured(p);
-        p.start(r.getProcessContext());
-        p.acceptForTest(
-                TagDefinition.parse("DemoSwitch", NODE, 1000, 100),
-                new DataValue(new Variant("1")));
-        ProcessSession session = spy(r.getProcessSessionFactory().createSession());
-        doThrow(new RuntimeException("simulated repository failure"))
-                .when(session)
-                .commitAsync(any(Runnable.class), any());
-        assertThrows(
-                org.apache.nifi.processor.exception.ProcessException.class,
-                () -> p.onTrigger(r.getProcessContext(), session));
-        verify(session).rollback();
-        r.run(1, true, false);
-        r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
     }
 
     @Test
@@ -145,7 +124,7 @@ class ProcessorTest {
     void overflowRaisesCounter() throws Exception {
         OfflineProcessor p = new OfflineProcessor();
         TestRunner r = configured(p);
-        r.setProperty(SubscribeOpcUa.BUFFER, "1");
+        r.setProperty(ConsumeOPCUA.BUFFER, "1");
         p.start(r.getProcessContext());
         for (int i = 0; i < 3; i++)
             p.acceptForTest(

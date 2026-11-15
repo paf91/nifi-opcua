@@ -42,11 +42,71 @@ final class ClientIdentity {
 
     static ClientIdentity load(OpcSettings settings) throws Exception {
         if (!settings.security().requiresClientIdentity()) return null;
+        if (settings.clientKeyStore() != null)
+            return load(
+                    settings.clientKeyStore(),
+                    settings.clientKeyAlias(),
+                    settings.privateKeyPassword().toCharArray(),
+                    settings.applicationUri());
         return load(
                 settings.certificate(),
                 settings.privateKey(),
                 settings.privateKeyPassword().toCharArray(),
                 settings.applicationUri());
+    }
+
+    static ClientIdentity load(
+            KeyStoreSettings settings, String alias, char[] keyPassword, String applicationUri)
+            throws Exception {
+        char[] supplied = keyPassword == null ? new char[0] : keyPassword;
+        try {
+            KeyStore store =
+                    KeyStoreLoader.load(
+                            settings.path(), settings.type(), settings.password().toCharArray());
+            String selected = alias == null || alias.isEmpty() ? null : alias;
+            if (selected == null) {
+                java.util.Enumeration<String> aliases = store.aliases();
+                while (aliases.hasMoreElements()) {
+                    String candidate = aliases.nextElement();
+                    if (!store.entryInstanceOf(candidate, KeyStore.PrivateKeyEntry.class)) continue;
+                    if (selected != null)
+                        throw new IllegalArgumentException(
+                                "Client keystore contains multiple private-key entries; set Client"
+                                        + " Key Alias");
+                    selected = candidate;
+                }
+                if (selected == null)
+                    throw new IllegalArgumentException(
+                            "Client keystore has no supported private-key entry; use a JKS or"
+                                + " PKCS12 private-key entry with a certificate chain, or PEM/DER"
+                                + " files");
+            } else if (!store.containsAlias(selected)) {
+                throw new IllegalArgumentException(
+                        "Client Key Alias was not found in the client keystore");
+            }
+            if (!store.entryInstanceOf(selected, KeyStore.PrivateKeyEntry.class))
+                throw new IllegalArgumentException(
+                        "Client Key Alias must identify a private-key entry");
+            java.security.cert.Certificate[] certificates = store.getCertificateChain(selected);
+            if (certificates == null || certificates.length == 0)
+                throw new IllegalArgumentException(
+                        "Client keystore private-key entry has no certificate chain");
+            X509Certificate[] chain = new X509Certificate[certificates.length];
+            for (int i = 0; i < certificates.length; i++) {
+                if (!(certificates[i] instanceof X509Certificate))
+                    throw new IllegalArgumentException(
+                            "Client certificate chain must contain X.509 certificates");
+                chain[i] = (X509Certificate) certificates[i];
+            }
+            String resolvedUri = validateCertificate(chain, applicationUri);
+            Key key = store.getKey(selected, supplied);
+            if (!(key instanceof PrivateKey))
+                throw new IllegalArgumentException(
+                        "Client Key Alias must identify a private-key entry");
+            return identity((PrivateKey) key, chain, resolvedUri);
+        } finally {
+            Arrays.fill(supplied, '\0');
+        }
     }
 
     static String applicationUri(OpcSettings settings, ClientIdentity identity) {
@@ -85,6 +145,16 @@ final class ClientIdentity {
     static ClientIdentity load(
             Path certificate, Path keyFile, char[] password, String applicationUri)
             throws Exception {
+        try {
+            return loadIdentity(certificate, keyFile, password, applicationUri);
+        } finally {
+            if (password != null) Arrays.fill(password, '\0');
+        }
+    }
+
+    private static ClientIdentity loadIdentity(
+            Path certificate, Path keyFile, char[] password, String applicationUri)
+            throws Exception {
         X509Certificate[] chain;
         try (InputStream in = Files.newInputStream(certificate)) {
             chain =
@@ -92,14 +162,7 @@ final class ClientIdentity {
                             .generateCertificates(in)
                             .toArray(new X509Certificate[0]);
         }
-        if (chain.length == 0) throw new IllegalArgumentException("Certificate file is empty");
-        X509Certificate leaf = chain[0];
-        leaf.checkValidity();
-        if (!(leaf.getPublicKey() instanceof RSAPublicKey)
-                || ((RSAPublicKey) leaf.getPublicKey()).getModulus().bitLength() < 2048)
-            throw new IllegalArgumentException(
-                    "Secured connections require an RSA certificate with at least 2048 bits");
-        String resolvedUri = resolveApplicationUri(leaf, applicationUri);
+        String resolvedUri = validateCertificate(chain, applicationUri);
         byte[] bytes = Files.readAllBytes(keyFile);
         PrivateKey privateKey;
         try {
@@ -139,8 +202,25 @@ final class ClientIdentity {
             }
         } finally {
             Arrays.fill(bytes, (byte) 0);
-            Arrays.fill(password, '\0');
         }
+        return identity(privateKey, chain, resolvedUri);
+    }
+
+    private static String validateCertificate(X509Certificate[] chain, String applicationUri)
+            throws CertificateException {
+        if (chain.length == 0) throw new IllegalArgumentException("Certificate file is empty");
+        X509Certificate leaf = chain[0];
+        leaf.checkValidity();
+        if (!(leaf.getPublicKey() instanceof RSAPublicKey)
+                || ((RSAPublicKey) leaf.getPublicKey()).getModulus().bitLength() < 2048)
+            throw new IllegalArgumentException(
+                    "Secured connections require an RSA certificate with at least 2048 bits");
+        return resolveApplicationUri(leaf, applicationUri);
+    }
+
+    private static ClientIdentity identity(
+            PrivateKey privateKey, X509Certificate[] chain, String resolvedUri) throws Exception {
+        X509Certificate leaf = chain[0];
         Signature signature = Signature.getInstance("SHA256withRSA");
         byte[] challenge = new byte[32];
         new SecureRandom().nextBytes(challenge);

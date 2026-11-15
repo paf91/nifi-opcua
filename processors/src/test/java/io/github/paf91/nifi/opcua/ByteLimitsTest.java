@@ -119,13 +119,13 @@ class ByteLimitsTest {
     @Test
     void rejectsLimitsThatCouldLeaveRecordsUndrainable() {
         TestRunner runner = ProcessorTest.configured(new ProcessorTest.OfflineProcessor());
-        runner.setProperty(SubscribeOpcUa.RECORD_BYTES, "1024");
-        runner.setProperty(SubscribeOpcUa.BUFFER_BYTES, "1023");
+        runner.setProperty(ConsumeOPCUA.RECORD_BYTES, "1024");
+        runner.setProperty(ConsumeOPCUA.BUFFER_BYTES, "1023");
         runner.assertNotValid();
-        runner.setProperty(SubscribeOpcUa.BUFFER_BYTES, "1024");
-        runner.setProperty(SubscribeOpcUa.BATCH_BYTES, "1025");
+        runner.setProperty(ConsumeOPCUA.BUFFER_BYTES, "1024");
+        runner.setProperty(ConsumeOPCUA.BATCH_BYTES, "1025");
         runner.assertNotValid();
-        runner.setProperty(SubscribeOpcUa.BATCH_BYTES, "1026");
+        runner.setProperty(ConsumeOPCUA.BATCH_BYTES, "1026");
         runner.assertValid();
     }
 
@@ -133,8 +133,8 @@ class ByteLimitsTest {
     void reportsOversizedSeparatelyFromFullBuffer() throws Exception {
         ProcessorTest.OfflineProcessor p = new ProcessorTest.OfflineProcessor();
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.BUFFER, "1");
-        r.setProperty(SubscribeOpcUa.RECORD_BYTES, "1024");
+        r.setProperty(ConsumeOPCUA.BUFFER, "1");
+        r.setProperty(ConsumeOPCUA.RECORD_BYTES, "1024");
         p.start(r.getProcessContext());
         try {
             p.acceptForTest(TAG, new DataValue(new Variant(new byte[10000])));
@@ -145,7 +145,7 @@ class ByteLimitsTest {
             assertEquals(1L, health.get("oversizedNotifications"));
             assertEquals(0L, health.get("encodingFailures"));
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
             assertEquals(Long.valueOf(2), r.getCounterValue("OPC UA notifications dropped"));
         } finally {
             p.stop();
@@ -156,8 +156,8 @@ class ByteLimitsTest {
     void retainedDataKeepsItsOriginalLimitsAndIdentityUntilCommit() throws Exception {
         ProcessorTest.OfflineProcessor p = new ProcessorTest.OfflineProcessor();
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.RECORD_BYTES, "1200");
-        r.setProperty(SubscribeOpcUa.BATCH_BYTES, "1202");
+        r.setProperty(ConsumeOPCUA.RECORD_BYTES, "1200");
+        r.setProperty(ConsumeOPCUA.BATCH_BYTES, "1202");
         p.start(r.getProcessContext());
         for (int i = 0; i < 2; i++)
             p.acceptForTest(
@@ -174,9 +174,9 @@ class ByteLimitsTest {
                 .commitAsync(any(Runnable.class), any());
         p.onTrigger(r.getProcessContext(), pending);
         p.stop();
-        r.setProperty(SubscribeOpcUa.RECORD_BYTES, "100");
-        r.setProperty(SubscribeOpcUa.BATCH_BYTES, "102");
-        r.setProperty(SubscribeOpcUa.ENDPOINT, "opc.tcp://changed:4840");
+        r.setProperty(ConsumeOPCUA.RECORD_BYTES, "100");
+        r.setProperty(ConsumeOPCUA.BATCH_BYTES, "102");
+        r.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://changed:4840");
         p.start(r.getProcessContext());
         try {
             ProcessSession blocked = spy(r.getProcessSessionFactory().createSession());
@@ -185,8 +185,8 @@ class ByteLimitsTest {
             pending.commitAsync();
             committed.get().run();
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 2);
-            r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 2);
+            r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                     .forEach(
                             f -> {
                                 assertTrue(r.getContentAsByteArray(f).length <= 1202);

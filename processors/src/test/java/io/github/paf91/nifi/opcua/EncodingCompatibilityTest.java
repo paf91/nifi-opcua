@@ -14,6 +14,124 @@ import java.time.Instant;
 import java.util.*;
 
 class EncodingCompatibilityTest {
+    @Test
+    void directBoxedFloatingPointArraysPreserveNullsSignedZeroAndSpecialValues() throws Exception {
+        assertArrayJson(
+                new Double[] {
+                    null,
+                    -0.0,
+                    0.0,
+                    -Double.MIN_VALUE,
+                    Double.MIN_VALUE,
+                    -Double.MAX_VALUE,
+                    Double.MAX_VALUE,
+                    Double.NaN,
+                    Double.NEGATIVE_INFINITY,
+                    Double.POSITIVE_INFINITY
+                },
+                "[null,-0.0,0.0,-4.9E-324,4.9E-324,-1.7976931348623157E308,"
+                        + "1.7976931348623157E308,\"NaN\",\"-Infinity\",\"Infinity\"]");
+        assertArrayJson(
+                new Float[] {
+                    null,
+                    -0.0f,
+                    0.0f,
+                    -Float.MIN_VALUE,
+                    Float.MIN_VALUE,
+                    -Float.MAX_VALUE,
+                    Float.MAX_VALUE,
+                    Float.NaN,
+                    Float.NEGATIVE_INFINITY,
+                    Float.POSITIVE_INFINITY
+                },
+                "[null,-0.0,0.0,-1.4E-45,1.4E-45,-3.4028235E38,3.4028235E38,"
+                        + "\"NaN\",\"-Infinity\",\"Infinity\"]");
+    }
+
+    @Test
+    void directBoxedLongAndBooleanArraysPreserveNullsAndValueTypes() throws Exception {
+        assertArrayJson(
+                new Long[] {null, Long.MIN_VALUE, -1L, 0L, 1L, Long.MAX_VALUE},
+                "[null,\"-9223372036854775808\",\"-1\",\"0\",\"1\",\"9223372036854775807\"]");
+        assertArrayJson(new Boolean[] {true, null, false}, "[true,null,false]");
+    }
+
+    @Test
+    void emptyBoxedArraysRemainJsonArrays() throws Exception {
+        for (Object array : new Object[] {new Double[0], new Float[0], new Long[0], new Boolean[0]})
+            assertArrayJson(array, "[]");
+    }
+
+    static void assertArrayJson(Object array, String expectedJson) throws Exception {
+        assertEquals(
+                new ObjectMapper().readTree(expectedJson),
+                MemoryBoundsTest.value(array),
+                array.getClass().getName());
+    }
+
+    @Test
+    void directPrimitiveWritersPreserveNumbersAndSpecialValues() throws Exception {
+        Object[] arrays = {
+            new double[] {
+                -0.0, Double.MIN_VALUE, Double.MAX_VALUE, Double.NaN, Double.POSITIVE_INFINITY
+            },
+            new float[] {-0.0f, Float.MIN_VALUE, Float.MAX_VALUE, Float.NEGATIVE_INFINITY},
+            new long[] {Long.MIN_VALUE, Long.MAX_VALUE},
+            new int[] {Integer.MIN_VALUE, Integer.MAX_VALUE},
+            new byte[] {-128, 0, 127},
+            new short[] {Short.MIN_VALUE, Short.MAX_VALUE},
+            new boolean[] {true, false},
+            new int[0],
+            new double[][] {{-0.0, Double.NaN}, {1.0, 2.5}}
+        };
+        ObjectMapper mapper = new ObjectMapper();
+        for (Object array : arrays) {
+            String expected = mapper.writeValueAsString(NotificationJson.normalize(array));
+            JsonNode encoded =
+                    mapper.readTree(
+                            NotificationJson.encode(
+                                    MemoryBoundsTest.TAG, new DataValue(new Variant(array)), 4096));
+            assertEquals(
+                    mapper.readTree(expected), encoded.get("value"), array.getClass().getName());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "1601-01-01T00:00:00.000000100Z",
+                "1969-12-31T23:59:59.999999900Z",
+                "1970-01-01T00:00:00Z",
+                "2026-10-29T12:34:56.123456700Z"
+            })
+    void notificationTimesRetainUtcTickPrecisionAcrossTheUnixEpoch(String text) throws Exception {
+        Instant instant = Instant.parse(text);
+        DateTime date = new DateTime(instant);
+        for (String format : Arrays.asList("ISO-8601", "Epoch Milliseconds")) {
+            OutputSettings settings =
+                    new OutputSettings(
+                            "tag,value,sourceTimestamp,serverTimestamp",
+                            "JSON Array",
+                            format,
+                            false,
+                            0);
+            JsonNode record =
+                    new ObjectMapper()
+                            .readTree(
+                                    NotificationJson.encode(
+                                            MemoryBoundsTest.TAG,
+                                            new DataValue(
+                                                    new Variant(date), StatusCode.GOOD, date, date),
+                                            4096,
+                                            settings));
+            assertEquals(instant.toString(), record.get("value").asText());
+            if (settings.epochMillis)
+                assertEquals(instant.toEpochMilli(), record.get("sourceTimestamp").longValue());
+            else assertEquals(instant.toString(), record.get("sourceTimestamp").asText());
+            assertEquals(record.get("sourceTimestamp"), record.get("serverTimestamp"));
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(longs = {0, 1, 255, 65535, 0x40000480L, 0x80170000L, 0xffffffffL, -1L})
     void statusHexAndQualityRemainUnchanged(long code) throws Exception {

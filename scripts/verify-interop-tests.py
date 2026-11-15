@@ -7,9 +7,12 @@ import xml.etree.ElementTree as ET
 SUITES = ('Open62541Test', 'Open62541RecoveryTest')
 
 
-def verify(directory):
+def verify(directory, profile):
+    if profile not in ('nifi1', 'nifi2'):
+        raise ValueError('Unsupported profile: ' + profile)
+    suites = SUITES + (('Open62541SetupTest',) if profile == 'nifi2' else ())
     total = 0
-    for name in SUITES:
+    for name in suites:
         path = directory / ('TEST-io.github.paf91.nifi.opcua.' + name + '.xml')
         if not path.is_file():
             raise ValueError('Missing independent-server report: ' + name)
@@ -25,8 +28,9 @@ def verify(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
+    parser.add_argument('--profile', choices=('nifi1', 'nifi2'), required=True)
     args = parser.parse_args()
-    print('Independent-server tests passed: ' + str(verify(args.directory)))
+    print('Independent-server tests passed: ' + str(verify(args.directory, args.profile)))
 
 
 if __name__ == '__main__':

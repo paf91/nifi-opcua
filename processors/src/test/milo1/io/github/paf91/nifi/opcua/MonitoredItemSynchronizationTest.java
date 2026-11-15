@@ -57,7 +57,7 @@ class MonitoredItemSynchronizationTest {
 
     private TestRunner runner() {
         return ProcessorTest.configured(
-                new SubscribeOpcUa() {
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable openConnection(
                             ProcessContext context, ConnectionAttempt attempt) {
@@ -108,8 +108,8 @@ class MonitoredItemSynchronizationTest {
         addItem("tag-" + password + "-" + keyPassword);
         respondWith(new StatusCode(StatusCodes.Bad_NodeIdUnknown));
         TestRunner runner = runner();
-        runner.setProperty(SubscribeOpcUa.PASSWORD, password);
-        runner.setProperty(SubscribeOpcUa.KEY_PASSWORD, keyPassword);
+        runner.setProperty(ConsumeOPCUA.PASSWORD, password);
+        runner.setProperty(ConsumeOPCUA.KEY_PASSWORD, keyPassword);
         String log = failureLog(runner);
         assertTrue(log.contains("tag-[redacted]-[redacted]"), log);
         assertTrue(log.contains("Bad_NodeIdUnknown"), log);

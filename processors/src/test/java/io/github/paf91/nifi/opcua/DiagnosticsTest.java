@@ -25,8 +25,8 @@ class DiagnosticsTest {
     @org.junit.jupiter.params.provider.EnumSource(ServerCertificateValidation.class)
     void verificationUsesTheConfiguredServerValidation(ServerCertificateValidation mode) {
         AtomicReference<OpcSettings> captured = new AtomicReference<>();
-        SubscribeOpcUa processor =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA processor =
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable verifyConnection(
                             OpcSettings settings,
@@ -38,7 +38,7 @@ class DiagnosticsTest {
                     }
                 };
         TestRunner runner = ProcessorTest.configured(processor);
-        runner.setProperty(SubscribeOpcUa.SERVER_CERTIFICATE_VALIDATION, mode.value());
+        runner.setProperty(ConsumeOPCUA.SERVER_CERTIFICATE_VALIDATION, mode.value());
         ConfigVerificationResult result =
                 processor.verify(runner.getProcessContext(), null, Collections.emptyMap()).get(0);
         assertEquals(ConfigVerificationResult.Outcome.SUCCESSFUL, result.getOutcome());
@@ -109,7 +109,7 @@ class DiagnosticsTest {
     void verificationClosesItsOwnConnectionWithoutChangingDeliveryState() throws Exception {
         AtomicBoolean closed = new AtomicBoolean();
         AtomicReference<ConnectionAttempt> attempt = new AtomicReference<>();
-        SubscribeOpcUa processor =
+        ConsumeOPCUA processor =
                 new ProcessorTest.OfflineProcessor() {
                     @Override
                     protected AutoCloseable verifyConnection(
@@ -135,8 +135,8 @@ class DiagnosticsTest {
                     0L,
                     processor.diagnosticSnapshot(r.getProcessContext()).get("connectionAttempts"));
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
-            r.assertTransferCount(SubscribeOpcUa.DIAGNOSTICS, 0);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
+            r.assertTransferCount(ConsumeOPCUA.DIAGNOSTICS, 0);
         } finally {
             processor.stop();
         }
@@ -144,8 +144,8 @@ class DiagnosticsTest {
 
     @Test
     void verificationRedactsSecretsBeforeNormalizingOrTruncatingMetadata() {
-        SubscribeOpcUa p =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA p =
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable verifyConnection(
                             OpcSettings settings,
@@ -162,8 +162,8 @@ class DiagnosticsTest {
                     }
                 };
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.PASSWORD, "private\npassword");
-        r.setProperty(SubscribeOpcUa.KEY_PASSWORD, "private");
+        r.setProperty(ConsumeOPCUA.PASSWORD, "private\npassword");
+        r.setProperty(ConsumeOPCUA.KEY_PASSWORD, "private");
         ConfigVerificationResult result =
                 p.verify(r.getProcessContext(), null, Collections.emptyMap()).get(0);
         assertEquals(ConfigVerificationResult.Outcome.FAILED, result.getOutcome());
@@ -177,7 +177,7 @@ class DiagnosticsTest {
     void diagnosticCommitFailureRetriesReportAndDataTogether() throws Exception {
         ProcessorTest.OfflineProcessor p = new ProcessorTest.OfflineProcessor();
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.DIAGNOSTICS_INTERVAL, "3600");
+        r.setProperty(ConsumeOPCUA.DIAGNOSTICS_INTERVAL, "3600");
         p.start(r.getProcessContext());
         try {
             p.acceptForTest(
@@ -199,11 +199,11 @@ class DiagnosticsTest {
             failed.rollback();
             failure.get().accept(new IllegalStateException("failed"));
             r.run(2, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
-            r.assertTransferCount(SubscribeOpcUa.DIAGNOSTICS, 1);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
+            r.assertTransferCount(ConsumeOPCUA.DIAGNOSTICS, 1);
             byte[] content =
                     r.getContentAsByteArray(
-                            r.getFlowFilesForRelationship(SubscribeOpcUa.DIAGNOSTICS).get(0));
+                            r.getFlowFilesForRelationship(ConsumeOPCUA.DIAGNOSTICS).get(0));
             JsonNode health = JSON.readTree(content);
             assertEquals(
                     1, health.get("buffer").get("records").asInt()); // snapshot before data commit
@@ -218,15 +218,15 @@ class DiagnosticsTest {
 
     @Test
     void canReportFailureWithNoMeasurementsAndRetryAfterSerializationFailure() throws Exception {
-        SubscribeOpcUa p =
-                new SubscribeOpcUa() {
+        ConsumeOPCUA p =
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable openConnection(ProcessContext c, ConnectionAttempt a) {
                         throw new IllegalStateException("test-only-password cannot connect");
                     }
                 };
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.DIAGNOSTICS_INTERVAL, "60");
+        r.setProperty(ConsumeOPCUA.DIAGNOSTICS_INTERVAL, "60");
         p.start(r.getProcessContext());
         try {
             ProcessSession failed = spy(r.getProcessSessionFactory().createSession());
@@ -234,12 +234,12 @@ class DiagnosticsTest {
             assertThrows(RuntimeException.class, () -> p.onTrigger(r.getProcessContext(), failed));
             verify(failed).rollback();
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
-            r.assertTransferCount(SubscribeOpcUa.DIAGNOSTICS, 1);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
+            r.assertTransferCount(ConsumeOPCUA.DIAGNOSTICS, 1);
             JsonNode health =
                     JSON.readTree(
                             r.getContentAsByteArray(
-                                    r.getFlowFilesForRelationship(SubscribeOpcUa.DIAGNOSTICS)
+                                    r.getFlowFilesForRelationship(ConsumeOPCUA.DIAGNOSTICS)
                                             .get(0)));
             assertEquals("RETRYING", health.get("state").asText());
             assertEquals(1, health.get("connectionAttempts").asInt());
@@ -253,7 +253,7 @@ class DiagnosticsTest {
     void oldPendingReportCannotDelayReportsAfterConfigurationChange() throws Exception {
         ProcessorTest.OfflineProcessor p = new ProcessorTest.OfflineProcessor();
         TestRunner r = ProcessorTest.configured(p);
-        r.setProperty(SubscribeOpcUa.DIAGNOSTICS_INTERVAL, "3600");
+        r.setProperty(ConsumeOPCUA.DIAGNOSTICS_INTERVAL, "3600");
         p.start(r.getProcessContext());
         ProcessSession pending = spy(r.getProcessSessionFactory().createSession());
         AtomicReference<Runnable> committed = new AtomicReference<>();
@@ -266,14 +266,14 @@ class DiagnosticsTest {
                 .commitAsync(any(Runnable.class), any());
         p.onTrigger(r.getProcessContext(), pending);
         p.stop();
-        r.setProperty(SubscribeOpcUa.DIAGNOSTICS_INTERVAL, "1");
+        r.setProperty(ConsumeOPCUA.DIAGNOSTICS_INTERVAL, "1");
         p.start(r.getProcessContext());
         try {
             pending.commitAsync();
             committed.get().run();
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.DIAGNOSTICS, 2);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+            r.assertTransferCount(ConsumeOPCUA.DIAGNOSTICS, 2);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
         } finally {
             p.stop();
         }

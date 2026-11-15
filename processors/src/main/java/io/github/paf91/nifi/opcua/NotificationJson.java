@@ -22,31 +22,54 @@ final class NotificationJson {
     }
 
     static byte[] encode(TagDefinition tag, DataValue value, int maximumBytes) throws IOException {
-        String received = Instant.now().toString();
+        return encode(tag, value, maximumBytes, OutputSettings.DEFAULT);
+    }
+
+    static byte[] encode(
+            TagDefinition tag, DataValue value, int maximumBytes, OutputSettings settings)
+            throws IOException {
         Object raw = value.getValue() == null ? null : value.getValue().getValue();
         StatusCode status = value.getStatusCode();
         LimitedOutput output = new LimitedOutput(maximumBytes);
         try (JsonGenerator generator = JSON.getFactory().createGenerator(output)) {
             generator.writeStartObject();
-            generator.writeStringField("tag", tag.alias());
-            generator.writeStringField("nodeId", nodeIdText(tag.nodeId(), maximumBytes));
+            if (settings.includes(OutputSettings.Field.tag))
+                generator.writeStringField("tag", tag.alias());
+            if (settings.includes(OutputSettings.Field.nodeId))
+                generator.writeStringField("nodeId", tag.nodeIdText(maximumBytes));
             if (tag.address().namespaceUri() != null) {
-                generator.writeStringField("configuredNodeId", tag.address().text());
-                generator.writeStringField("namespaceUri", tag.address().namespaceUri());
+                if (settings.includes(OutputSettings.Field.configuredNodeId))
+                    generator.writeStringField("configuredNodeId", tag.address().text());
+                if (settings.includes(OutputSettings.Field.namespaceUri))
+                    generator.writeStringField("namespaceUri", tag.address().namespaceUri());
             }
             generator.writeFieldName("value");
             writeValue(generator, raw);
-            generator.writeStringField(
-                    "valueType", raw == null ? null : raw.getClass().getSimpleName());
-            generator.writeStringField(
-                    "statusCode", status == null ? null : statusText(status.getValue()));
-            generator.writeStringField(
-                    "quality",
-                    status == null
-                            ? "Unknown"
-                            : status.isGood() ? "Good" : status.isBad() ? "Bad" : "Uncertain");
-            generator.writeStringField("sourceTimestamp", timestamp(value.getSourceTime()));
-            generator.writeStringField("receivedTimestamp", received);
+            if (settings.includes(OutputSettings.Field.valueType))
+                generator.writeStringField(
+                        "valueType", raw == null ? null : raw.getClass().getSimpleName());
+            if (settings.includes(OutputSettings.Field.statusCode))
+                generator.writeStringField(
+                        "statusCode", status == null ? null : statusText(status.getValue()));
+            if (settings.includes(OutputSettings.Field.quality))
+                generator.writeStringField(
+                        "quality",
+                        status == null
+                                ? "Unknown"
+                                : status.isGood() ? "Good" : status.isBad() ? "Bad" : "Uncertain");
+            if (settings.includes(OutputSettings.Field.sourceTimestamp))
+                writeTimestamp(generator, "sourceTimestamp", value.getSourceTime(), settings);
+            if (settings.includes(OutputSettings.Field.serverTimestamp))
+                writeTimestamp(generator, "serverTimestamp", value.getServerTime(), settings);
+            if (settings.includes(OutputSettings.Field.receivedTimestamp)) {
+                if (settings.epochMillis)
+                    generator.writeNumberField("receivedTimestamp", System.currentTimeMillis());
+                else generator.writeStringField("receivedTimestamp", Instant.now().toString());
+            }
+            if (settings.includes(OutputSettings.Field.dataType))
+                generator.writeStringField("dataType", tag.metadata().dataType);
+            if (settings.includes(OutputSettings.Field.engineeringUnits))
+                tag.metadata().writeUnits(generator);
             generator.writeEndObject();
         }
         return output.bytes.toByteArray();
@@ -78,8 +101,32 @@ final class NotificationJson {
             else generator.writeBinary(binary.bytes());
         } else if (value != null && value.getClass().isArray()) {
             generator.writeStartArray();
-            for (int i = 0; i < Array.getLength(value); i++)
-                writeValue(generator, Array.get(value, i), depth + 1);
+            if (depth == MAX_VALUE_DEPTH && Array.getLength(value) > 0)
+                throw new IOException("OPC UA value nesting is too deep");
+            if (value instanceof double[]) {
+                for (double n : (double[]) value) {
+                    if (Double.isFinite(n)) generator.writeNumber(n);
+                    else generator.writeString(Double.toString(n));
+                }
+            } else if (value instanceof float[]) {
+                for (float n : (float[]) value) {
+                    if (Float.isFinite(n)) generator.writeNumber(n);
+                    else generator.writeString(Float.toString(n));
+                }
+            } else if (value instanceof int[]) {
+                for (int n : (int[]) value) generator.writeNumber(n);
+            } else if (value instanceof long[]) {
+                for (long n : (long[]) value) generator.writeString(Long.toString(n));
+            } else if (value instanceof short[]) {
+                for (short n : (short[]) value) generator.writeNumber(n);
+            } else if (value instanceof byte[]) {
+                for (byte n : (byte[]) value) generator.writeNumber(n);
+            } else if (value instanceof boolean[]) {
+                for (boolean n : (boolean[]) value) generator.writeBoolean(n);
+            } else {
+                for (int i = 0; i < Array.getLength(value); i++)
+                    writeValue(generator, Array.get(value, i), depth + 1);
+            }
             generator.writeEndArray();
         } else if (value instanceof ExtensionObject) {
             ExtensionObject extension = (ExtensionObject) value;
@@ -105,16 +152,50 @@ final class NotificationJson {
             generator.writeString(
                     nodeIdText(
                             (NodeId) value, ((LimitedOutput) generator.getOutputTarget()).limit));
-        } else generator.writeObject(normalize(value));
+        } else writeScalar(generator, normalize(value));
+    }
+
+    private static void writeScalar(JsonGenerator generator, Object value) throws IOException {
+        // Avoid ObjectMapper.writeValue(): it constructs a provider and flushes per element.
+        if (value == null) generator.writeNull();
+        else if (value instanceof String) generator.writeString((String) value);
+        else if (value instanceof Boolean) generator.writeBoolean((Boolean) value);
+        else if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+            generator.writeNumber(((Number) value).intValue());
+        else if (value instanceof Long) generator.writeNumber((Long) value); // normalized UInt32
+        else if (value instanceof Double) generator.writeNumber((Double) value);
+        else if (value instanceof Float) generator.writeNumber((Float) value);
+        else if (value instanceof Map) {
+            generator.writeStartObject();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                generator.writeFieldName((String) entry.getKey());
+                writeScalar(generator, entry.getValue());
+            }
+            generator.writeEndObject();
+        } else throw new IOException("Unsupported normalized OPC UA value");
+    }
+
+    private static void writeTimestamp(
+            JsonGenerator generator, String field, DateTime value, OutputSettings settings)
+            throws IOException {
+        if (value == null || value.getUtcTime() == 0) generator.writeNullField(field);
+        else if (settings.epochMillis)
+            generator.writeNumberField(
+                    field, Math.floorDiv(value.getUtcTime(), 10000L) - 11644473600000L);
+        else generator.writeStringField(field, timestamp(value));
     }
 
     private static String nodeIdText(NodeId value, int limit) throws RecordTooLargeException {
+        checkNodeIdSize(value, limit);
+        return value.toParseableString();
+    }
+
+    static void checkNodeIdSize(NodeId value, int limit) throws RecordTooLargeException {
         Object identifier = value.getIdentifier();
         if ((identifier instanceof String && ((String) identifier).length() > limit)
                 || (identifier instanceof ByteString
                         && ((ByteString) identifier).length() > limit * 3L / 4))
             throw new RecordTooLargeException();
-        return value.toParseableString();
     }
 
     static final class RecordTooLargeException extends IOException {
@@ -145,7 +226,14 @@ final class NotificationJson {
     }
 
     private static String timestamp(DateTime date) {
-        return date == null || date.getUtcTime() == 0 ? null : date.getJavaInstant().toString();
+        if (date == null || date.getUtcTime() == 0) return null;
+        // OPC UA uses 100 ns ticks since 1601. Dividing Java milliseconds by 1000
+        // truncates negative seconds in both supported SDKs, shifting pre-1970 times.
+        long ticks = date.getUtcTime();
+        return Instant.ofEpochSecond(
+                        Math.floorDiv(ticks, 10000000L) - 11644473600L,
+                        Math.floorMod(ticks, 10000000L) * 100L)
+                .toString();
     }
 
     static Object normalize(Object value) {

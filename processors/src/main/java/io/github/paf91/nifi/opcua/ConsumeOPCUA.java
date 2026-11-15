@@ -25,15 +25,59 @@ import java.util.concurrent.atomic.*;
         "Subscribes to OPC UA Value changes with configurable security and anonymous or"
             + " username/password authentication. Defaults to Basic256Sha256 / SignAndEncrypt."
             + " Paste a list of NodeIds into Tags, or add individual tag properties. Outputs JSON"
-            + " arrays. Full server certificate validation is enabled by default. Buffers are in"
-            + " memory; overflow drops newest notifications and raises a bulletin.")
+            + " arrays or NDJSON with selectable fields. Full server certificate validation is"
+            + " enabled by default. Buffers are in memory; overflow drops newest notifications and"
+            + " raises a bulletin.")
+@WritesAttributes({
+    @WritesAttribute(
+            attribute = "mime.type",
+            description =
+                    "Content type of the measurement batch: application/json or"
+                            + " application/x-ndjson. Diagnostics FlowFiles use application/json."),
+    @WritesAttribute(
+            attribute = "record.count",
+            description = "Number of records in a measurement FlowFile."),
+    @WritesAttribute(
+            attribute = "opcua.endpoint",
+            description = "Endpoint recorded for the measurement buffer, including retained data."),
+    @WritesAttribute(
+            attribute = "opcua.security.policy",
+            description =
+                    "Channel security policy recorded for the measurement buffer, including"
+                            + " retained data."),
+    @WritesAttribute(
+            attribute = "opcua.security.mode",
+            description =
+                    "Channel security mode recorded for the measurement buffer, including retained"
+                            + " data."),
+    @WritesAttribute(
+            attribute = "opcua.output.fields",
+            description =
+                    "Selected measurement output fields, comma-separated in canonical order."),
+    @WritesAttribute(
+            attribute = "opcua.output.format",
+            description = "Format used to encode the measurement batch: JSON Array or NDJSON."),
+    @WritesAttribute(
+            attribute = "opcua.timestamp.format",
+            description =
+                    "Timestamp format used to encode the measurement batch: ISO-8601 or Epoch"
+                            + " Milliseconds."),
+    @WritesAttribute(
+            attribute = "opcua.quality.route",
+            description =
+                    "Measurement relationship name, set when Route by Quality was enabled for the"
+                            + " batch."),
+    @WritesAttribute(
+            attribute = "opcua.type",
+            description = "Set to diagnostics on diagnostics FlowFiles only.")
+})
 @DynamicProperty(
         name = "Tag alias",
         value =
                 "NodeId (ns= or nsu=) or JSON with nodeId, samplingIntervalMs, queueSize,"
                         + " discardOldest, deadbandType, deadbandValue",
         description =
-                "Add one property per monitored tag using the + button. Fictional example:"
+                "Add one property per monitored tag using the + button. Example:"
                         + " PumpRunning = ns=2;s=Example.Pump.Running. JSON options override the"
                         + " processor defaults.")
 @InputRequirement(InputRequirement.Requirement.INPUT_FORBIDDEN)
@@ -49,7 +93,7 @@ import java.util.concurrent.atomic.*;
                     requiredPermission = RequiredPermission.WRITE_FILESYSTEM,
                     explanation = "Initializes and maintains the OPC UA PKI trust directory.")
         })
-public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements VerifiableProcessor {
+public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements VerifiableProcessor {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
@@ -139,6 +183,35 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                     .allowableValues(OpcSecurity.USERNAME, OpcSecurity.ANONYMOUS)
                     .defaultValue(OpcSecurity.USERNAME)
                     .build();
+    public static final PropertyDescriptor ALLOW_UNENCRYPTED_PASSWORD =
+            new PropertyDescriptor.Builder()
+                    .name("Allow Unencrypted Password")
+                    .description(
+                            "Controls whether the password may be sent without encryption on the"
+                                + " OPC UA connection. The password can be encrypted separately in"
+                                + " the username token or protected by a SignAndEncrypt channel."
+                                + " None channels only permits an unencrypted password when"
+                                + " Security Mode is None. Never requires token encryption or"
+                                + " SignAndEncrypt. Always also permits unencrypted passwords on"
+                                + " Sign channels. Supported encrypted tokens are always preferred."
+                                + " Does not affect Anonymous authentication.")
+                    .required(true)
+                    .allowableValues(
+                            new AllowableValue(
+                                    "None channels only",
+                                    "None channels only",
+                                    "Allow an unencrypted password only when Security Mode is"
+                                            + " None."),
+                            new AllowableValue(
+                                    "Never",
+                                    "Never",
+                                    "Require username-token encryption or SignAndEncrypt."),
+                            new AllowableValue(
+                                    "Always",
+                                    "Always (insecure)",
+                                    "Also allow an unencrypted password on Sign channels."))
+                    .defaultValue(UnencryptedPasswordPolicy.NONE_CHANNELS_ONLY.value())
+                    .build();
     public static final PropertyDescriptor APPLICATION_URI =
             text(
                     "Application URI",
@@ -177,48 +250,115 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                                             + " possible."))
                     .defaultValue("Full")
                     .build();
+    public static final PropertyDescriptor CLIENT_IDENTITY_FORMAT =
+            new PropertyDescriptor.Builder()
+                    .name("Client Identity Format")
+                    .description(
+                            "PEM/DER uses separate certificate and private-key files. JKS or PKCS12"
+                                    + " uses Client Keystore File and an optional Client Key Alias."
+                                    + " Client identity is unused with channel Security Mode None.")
+                    .required(true)
+                    .allowableValues("PEM/DER", "JKS", "PKCS12")
+                    .defaultValue("PEM/DER")
+                    .build();
     public static final PropertyDescriptor CERTIFICATE =
             text(
                     "Client Certificate File",
                     "Absolute path to X.509 PEM chain (leaf first), or DER leaf certificate, on the"
-                            + " NiFi host. Required for Sign and SignAndEncrypt; unused with None.",
+                        + " NiFi host. Required for Sign and SignAndEncrypt with Client Identity"
+                        + " Format PEM/DER; unused with None.",
                     false,
                     false);
     public static final PropertyDescriptor PRIVATE_KEY =
             text(
                     "Client Private Key File",
                     "Absolute path to RSA PEM private key (PKCS#1/PKCS#8, optional encryption) or"
-                        + " unencrypted PKCS#8 DER. Required for Sign and SignAndEncrypt; unused"
-                        + " with None.",
+                            + " unencrypted PKCS#8 DER. Required for Sign and SignAndEncrypt with"
+                            + " Client Identity Format PEM/DER; unused with None.",
+                    false,
+                    false);
+    public static final PropertyDescriptor KEYSTORE =
+            text(
+                    "Client Keystore File",
+                    "Absolute path to the JKS or PKCS12 client identity store on each NiFi host."
+                            + " Use instead of Client Certificate File and Client Private Key File."
+                            + " Loaded when a new connection is created; Stop/Start applies file"
+                            + " changes.",
+                    false,
+                    false);
+    public static final PropertyDescriptor KEYSTORE_PASSWORD =
+            text(
+                    "Client Keystore Password",
+                    "Optional store password. Leave unset for an empty-password store or a PKCS12"
+                            + " store without integrity protection. Does not supply Private Key"
+                            + " Password.",
+                    true,
+                    false);
+    public static final PropertyDescriptor KEY_ALIAS =
+            text(
+                    "Client Key Alias",
+                    "Optional alias of a private-key entry in the client keystore. Leave unset only"
+                            + " when the store contains exactly one private-key entry.",
                     false,
                     false);
     public static final PropertyDescriptor KEY_PASSWORD =
             text(
                     "Private Key Password",
-                    "Password for encrypted private key; leave unset for an unencrypted key.",
+                    "Password for the PEM private key or selected keystore private-key entry. Leave"
+                        + " unset for an unencrypted PEM key or an empty key password. Independent"
+                        + " of Client Keystore Password; set both when they use the same password.",
+                    true,
+                    false);
+    public static final PropertyDescriptor SERVER_TRUST_SOURCE =
+            new PropertyDescriptor.Builder()
+                    .name("Server Trust Source")
+                    .description(
+                            "PKI Directory uses the existing directory trust list. JKS or PKCS12"
+                                + " uses only trusted-certificate entries in Server Truststore"
+                                + " File. An optional PKI Directory then supplies issuers and CRLs,"
+                                + " while its trusted/certs entries are ignored. Does not change"
+                                + " certificate validation rules. Unused when Server Certificate"
+                                + " Validation is None.")
+                    .required(true)
+                    .allowableValues("PKI Directory", "JKS", "PKCS12")
+                    .defaultValue("PKI Directory")
+                    .build();
+    public static final PropertyDescriptor TRUSTSTORE =
+            text(
+                    "Server Truststore File",
+                    "Absolute path to a JKS or PKCS12 store containing trusted X.509 certificate"
+                        + " entries. Private-key entries do not establish trust. Loaded when a new"
+                        + " connection is created; Stop/Start applies file changes.",
+                    false,
+                    false);
+    public static final PropertyDescriptor TRUSTSTORE_PASSWORD =
+            text(
+                    "Server Truststore Password",
+                    "Optional truststore password. Leave unset for an empty-password store or a"
+                            + " PKCS12 store without integrity protection. A wrong password is not"
+                            + " ignored.",
                     true,
                     false);
     public static final PropertyDescriptor PKI =
             text(
                     "PKI Directory",
-                    "Server trust folder on the NiFi host (absolute path), not a login or client"
-                        + " key location. Put the approved OPC server certificate in trusted/certs;"
-                        + " for a CA chain also supply issuer certificates and CRLs. This lets NiFi"
-                        + " verify the server, while your client certificate lets the server verify"
-                        + " NiFi. Required with Full or Certificate validation for secured"
-                        + " channels, and when an unencrypted endpoint encrypts username tokens"
-                        + " with its certificate. Unused when Server Certificate Validation is"
-                        + " None; no certificates are automatically added to the trust list.",
+                    "Server trust folder on each NiFi host (absolute path). With Server Trust"
+                        + " Source PKI Directory, trusted/certs supplies trusted certificates. With"
+                        + " a JKS or PKCS12 truststore, this optional directory supplies only"
+                        + " issuer certificates and CRLs; trusted/certs is ignored. Required when"
+                        + " the selected endpoint needs certificate validation and Server Trust"
+                        + " Source is PKI Directory. Unused when validation is None. No"
+                        + " certificates are automatically trusted.",
                     false,
                     false);
     public static final PropertyDescriptor TAG_LIST =
             new PropertyDescriptor.Builder()
                     .name("Tags")
                     .description(
-                            "Paste one complete NodeId per line, or alias | NodeId. Fictional"
-                                + " example: Temperature | ns=2;s=Example.Tank.Temperature. Blank"
-                                + " lines and lines starting with # are ignored. Alternatively"
-                                + " paste a JSON array of objects with nodeId, optional alias,"
+                            "Paste one complete NodeId per line, or alias | NodeId. Example:"
+                                + " Temperature | ns=2;s=Example.Tank.Temperature. Blank lines and"
+                                + " lines starting with # are ignored. Alternatively paste a JSON"
+                                + " array of objects with nodeId, optional alias,"
                                 + " samplingIntervalMs, queueSize, discardOldest, deadbandType and"
                                 + " deadbandValue. NodeIds support numeric ns= indexes and nsu="
                                 + " namespace URIs. Entries use processor defaults unless"
@@ -272,7 +412,7 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
     public static final PropertyDescriptor BATCH =
             number(
                     "Max Records Per FlowFile",
-                    "Maximum notifications per JSON array.",
+                    "Maximum notifications per FlowFile. A ceiling, not a minimum batch size.",
                     "500",
                     100000);
     public static final PropertyDescriptor BUFFER_BYTES =
@@ -294,11 +434,84 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
     public static final PropertyDescriptor BATCH_BYTES =
             number(
                     "Maximum FlowFile Bytes",
-                    "Maximum JSON array bytes including brackets and commas. Must be at least"
-                            + " Maximum Record Bytes plus two. Retained batches use their original"
-                            + " limits after Stop/Start.",
+                    "Maximum output bytes including JSON array framing or NDJSON newlines. Must be"
+                            + " at least Maximum Record Bytes plus two. Retained batches use their"
+                            + " original limits after Stop/Start.",
                     "4194304",
                     67108866);
+    public static final PropertyDescriptor OUTPUT_FIELDS =
+            new PropertyDescriptor.Builder()
+                    .name("Output Fields")
+                    .description(
+                            "Comma-separated fields:"
+                                + " tag,nodeId,configuredNodeId,namespaceUri,value,valueType,statusCode,quality,sourceTimestamp,receivedTimestamp,serverTimestamp,dataType,engineeringUnits."
+                                + " Include value and tag or nodeId. Compact example:"
+                                + " tag,value,statusCode,sourceTimestamp. Omitted fields are not"
+                                + " computed. dataType and engineeringUnits request cached server"
+                                + " metadata; unavailable metadata is null.")
+                    .required(true)
+                    .defaultValue(OutputSettings.DEFAULT_FIELDS)
+                    .addValidator(
+                            (subject, input, context) -> {
+                                try {
+                                    OutputSettings.parseFields(input);
+                                    return new ValidationResult.Builder()
+                                            .subject(subject)
+                                            .valid(true)
+                                            .build();
+                                } catch (IllegalArgumentException e) {
+                                    return new ValidationResult.Builder()
+                                            .subject(subject)
+                                            .valid(false)
+                                            .explanation(e.getMessage())
+                                            .build();
+                                }
+                            })
+                    .build();
+    public static final PropertyDescriptor OUTPUT_FORMAT =
+            new PropertyDescriptor.Builder()
+                    .name("Output Format")
+                    .description(
+                            "JSON array or one JSON object per line (NDJSON). Retained records keep"
+                                    + " their original output settings after Stop/Start.")
+                    .required(true)
+                    .allowableValues("JSON Array", "NDJSON")
+                    .defaultValue("JSON Array")
+                    .build();
+    public static final PropertyDescriptor TIMESTAMP_FORMAT =
+            new PropertyDescriptor.Builder()
+                    .name("Timestamp Format")
+                    .description(
+                            "Format of sourceTimestamp, serverTimestamp and receivedTimestamp."
+                                + " Epoch Milliseconds discards sub-millisecond precision. Does not"
+                                + " change OPC UA DateTime values in the value field.")
+                    .required(true)
+                    .allowableValues("ISO-8601", "Epoch Milliseconds")
+                    .defaultValue("ISO-8601")
+                    .build();
+    public static final PropertyDescriptor QUALITY_ROUTING =
+            new PropertyDescriptor.Builder()
+                    .name("Route by Quality")
+                    .description(
+                            "When true, send Bad readings to bad and Uncertain or missing status to"
+                                    + " uncertain; Good readings use success. Connect or explicitly"
+                                    + " terminate the additional relationships. Routing uses the"
+                                    + " original status even if statusCode/quality are omitted from"
+                                    + " output. Records are not reordered across routes.")
+                    .required(true)
+                    .allowableValues("true", "false")
+                    .defaultValue("false")
+                    .build();
+    public static final PropertyDescriptor BATCH_DELAY =
+            number(
+                    "Maximum Batch Delay (ms)",
+                    "Optional accumulation interval measured from the oldest queued record. Zero"
+                        + " disables the delay. Count/byte limits, route changes, buffer pressure"
+                        + " and Stop can make a batch ready earlier. Scheduling and backpressure"
+                        + " can delay delivery beyond this interval.",
+                    "0",
+                    60000,
+                    0);
     public static final PropertyDescriptor DIAGNOSTICS_INTERVAL =
             number(
                     "Diagnostics Interval (seconds)",
@@ -313,9 +526,10 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
             number(
                     "Request Timeout (ms)",
                     "Timeout per OPC operation, including discovery connect and GetEndpoints."
-                        + " Startup has multiple operations; item creation is chunked in batches of"
-                        + " up to 100, bounded by the server's advertised limit. Stop cancels"
-                        + " startup. Cleanup waits at most 1 second per disconnect.",
+                        + " Optional tag metadata requests share one timeout budget. Startup has"
+                        + " multiple operations; item creation is chunked in batches of up to 100,"
+                        + " bounded by the server's advertised limit. Stop cancels startup. Cleanup"
+                        + " waits at most 1 second per disconnect.",
                     "10000",
                     300000);
     public static final PropertyDescriptor RETRY =
@@ -339,7 +553,20 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
     public static final Relationship SUCCESS =
             new Relationship.Builder()
                     .name("success")
-                    .description("JSON arrays of data changes, including Bad/Uncertain quality.")
+                    .description(
+                            "Data changes. Includes all qualities unless Route by Quality is"
+                                    + " enabled.")
+                    .build();
+    public static final Relationship BAD =
+            new Relationship.Builder()
+                    .name("bad")
+                    .description("Bad OPC UA status when Route by Quality is enabled.")
+                    .build();
+    public static final Relationship UNCERTAIN =
+            new Relationship.Builder()
+                    .name("uncertain")
+                    .description(
+                            "Uncertain or missing OPC UA status when Route by Quality is enabled.")
                     .build();
     public static final Relationship DIAGNOSTICS =
             new Relationship.Builder()
@@ -355,11 +582,19 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                     SECURITY_POLICY,
                     SECURITY_MODE,
                     AUTHENTICATION,
+                    ALLOW_UNENCRYPTED_PASSWORD,
                     SERVER_CERTIFICATE_VALIDATION,
                     TAG_LIST,
+                    CLIENT_IDENTITY_FORMAT,
                     CERTIFICATE,
                     PRIVATE_KEY,
+                    KEYSTORE,
+                    KEYSTORE_PASSWORD,
+                    KEY_ALIAS,
                     KEY_PASSWORD,
+                    SERVER_TRUST_SOURCE,
+                    TRUSTSTORE,
+                    TRUSTSTORE_PASSWORD,
                     PKI,
                     USERNAME,
                     PASSWORD,
@@ -372,11 +607,19 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                     RECORD_BYTES,
                     BATCH,
                     BATCH_BYTES,
+                    OUTPUT_FIELDS,
+                    OUTPUT_FORMAT,
+                    TIMESTAMP_FORMAT,
+                    QUALITY_ROUTING,
+                    BATCH_DELAY,
                     DIAGNOSTICS_INTERVAL,
                     TIMEOUT,
                     RETRY,
                     STOP_DRAIN_TIMEOUT);
     private volatile NotificationBuffer buffer;
+    private volatile boolean qualityRouting;
+    private static final long ACTIVE_WAIT_NANOS =
+            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50);
     private volatile AutoCloseable connection;
     private final Object lifecycle = new Object();
     // Transport ownership must not wait for ProcessSession repository I/O.
@@ -419,7 +662,20 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
 
     @Override
     public Set<Relationship> getRelationships() {
-        return new HashSet<>(Arrays.asList(SUCCESS, DIAGNOSTICS));
+        Set<Relationship> relationships = new HashSet<>(Arrays.asList(SUCCESS, DIAGNOSTICS));
+        NotificationBuffer pending = buffer;
+        if (qualityRouting
+                || (pending != null && pending.output.routeQuality && pending.size() > 0)) {
+            relationships.add(BAD);
+            relationships.add(UNCERTAIN);
+        }
+        return relationships;
+    }
+
+    @Override
+    public void onPropertyModified(
+            PropertyDescriptor descriptor, String oldValue, String newValue) {
+        if (QUALITY_ROUTING.equals(descriptor)) qualityRouting = Boolean.parseBoolean(newValue);
     }
 
     @Override
@@ -492,7 +748,9 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                     new OpcSecurity(
                             context.getProperty(SECURITY_POLICY).getValue(),
                             context.getProperty(SECURITY_MODE).getValue(),
-                            context.getProperty(AUTHENTICATION).getValue());
+                            context.getProperty(AUTHENTICATION).getValue(),
+                            UnencryptedPasswordPolicy.parse(
+                                    context.getProperty(ALLOW_UNENCRYPTED_PASSWORD).getValue()));
         } catch (RuntimeException e) {
             errors.add(
                     new ValidationResult.Builder()
@@ -503,10 +761,28 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
         }
         if (security != null) {
             if (security.requiresClientIdentity()) {
-                for (PropertyDescriptor required : Arrays.asList(CERTIFICATE, PRIVATE_KEY))
-                    requireProperty(context, required, errors);
-                if (!"None".equals(context.getProperty(SERVER_CERTIFICATE_VALIDATION).getValue()))
-                    requireProperty(context, PKI, errors);
+                if ("PEM/DER".equals(context.getProperty(CLIENT_IDENTITY_FORMAT).getValue())) {
+                    for (PropertyDescriptor required : Arrays.asList(CERTIFICATE, PRIVATE_KEY))
+                        requireProperty(context, required, errors);
+                    for (PropertyDescriptor unused :
+                            Arrays.asList(KEYSTORE, KEYSTORE_PASSWORD, KEY_ALIAS))
+                        rejectProperty(context, unused, "Client Identity Format PEM/DER", errors);
+                } else {
+                    requireProperty(context, KEYSTORE, errors);
+                    for (PropertyDescriptor unused : Arrays.asList(CERTIFICATE, PRIVATE_KEY))
+                        rejectProperty(context, unused, "a JKS or PKCS12 client identity", errors);
+                }
+            }
+            if (!"None".equals(context.getProperty(SERVER_CERTIFICATE_VALIDATION).getValue())
+                    && (security.requiresClientIdentity() || security.usernameAuthentication())) {
+                if ("PKI Directory".equals(context.getProperty(SERVER_TRUST_SOURCE).getValue())) {
+                    if (security.requiresClientIdentity()) requireProperty(context, PKI, errors);
+                    for (PropertyDescriptor unused : Arrays.asList(TRUSTSTORE, TRUSTSTORE_PASSWORD))
+                        rejectProperty(
+                                context, unused, "Server Trust Source PKI Directory", errors);
+                } else if (security.requiresClientIdentity()) {
+                    requireProperty(context, TRUSTSTORE, errors);
+                }
             }
             if (security.usernameAuthentication()) {
                 requireProperty(context, USERNAME, errors);
@@ -542,7 +818,8 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                                 .build());
             }
         }
-        for (PropertyDescriptor path : Arrays.asList(CERTIFICATE, PRIVATE_KEY, PKI)) {
+        for (PropertyDescriptor path :
+                Arrays.asList(CERTIFICATE, PRIVATE_KEY, KEYSTORE, TRUSTSTORE, PKI)) {
             String value = context.getProperty(path).getValue();
             if (value == null) continue;
             try {
@@ -573,12 +850,27 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                             .build());
     }
 
+    private static void rejectProperty(
+            ValidationContext context,
+            PropertyDescriptor property,
+            String source,
+            List<ValidationResult> errors) {
+        if (context.getProperty(property).getValue() != null)
+            errors.add(
+                    new ValidationResult.Builder()
+                            .subject(property.getName())
+                            .valid(false)
+                            .explanation("Clear this property when using " + source)
+                            .build());
+    }
+
     private void initializeBuffer(ProcessContext context) {
         buffer =
                 new NotificationBuffer(
                         context.getProperty(BUFFER).asInteger(),
                         context.getProperty(BUFFER_BYTES).asInteger(),
-                        context.getProperty(RECORD_BYTES).asInteger());
+                        context.getProperty(RECORD_BYTES).asInteger(),
+                        outputSettings(context));
         bufferBatchBytes = context.getProperty(BATCH_BYTES).asInteger();
         bufferEndpoint = context.getProperty(ENDPOINT).getValue();
         bufferSecurityPolicy = context.getProperty(SECURITY_POLICY).getValue();
@@ -651,23 +943,64 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                         context.getProperty(SAMPLING).asInteger(),
                         context.getProperty(SERVER_QUEUE).asInteger());
         return new OpcSettings(
-                context.getProperty(ENDPOINT).getValue(),
-                context.getProperty(APPLICATION_URI).getValue(),
-                path(context, CERTIFICATE),
-                path(context, PRIVATE_KEY),
-                Optional.ofNullable(context.getProperty(KEY_PASSWORD).getValue()).orElse(""),
-                path(context, PKI),
-                context.getProperty(USERNAME).getValue(),
-                context.getProperty(PASSWORD).getValue(),
-                context.getProperty(PUBLISHING).asInteger(),
-                context.getProperty(TIMEOUT).asInteger(),
-                tags,
-                new OpcSecurity(
-                        context.getProperty(SECURITY_POLICY).getValue(),
-                        context.getProperty(SECURITY_MODE).getValue(),
-                        context.getProperty(AUTHENTICATION).getValue()),
-                ServerCertificateValidation.parse(
-                        context.getProperty(SERVER_CERTIFICATE_VALIDATION).getValue()));
+                        context.getProperty(ENDPOINT).getValue(),
+                        context.getProperty(APPLICATION_URI).getValue(),
+                        path(context, CERTIFICATE),
+                        path(context, PRIVATE_KEY),
+                        Optional.ofNullable(context.getProperty(KEY_PASSWORD).getValue())
+                                .orElse(""),
+                        path(context, PKI),
+                        context.getProperty(USERNAME).getValue(),
+                        context.getProperty(PASSWORD).getValue(),
+                        context.getProperty(PUBLISHING).asInteger(),
+                        context.getProperty(TIMEOUT).asInteger(),
+                        tags,
+                        new OpcSecurity(
+                                context.getProperty(SECURITY_POLICY).getValue(),
+                                context.getProperty(SECURITY_MODE).getValue(),
+                                context.getProperty(AUTHENTICATION).getValue(),
+                                UnencryptedPasswordPolicy.parse(
+                                        context.getProperty(ALLOW_UNENCRYPTED_PASSWORD)
+                                                .getValue())),
+                        ServerCertificateValidation.parse(
+                                context.getProperty(SERVER_CERTIFICATE_VALIDATION).getValue()))
+                .withKeyStores(
+                        keyStore(
+                                context,
+                                CLIENT_IDENTITY_FORMAT,
+                                "PEM/DER",
+                                KEYSTORE,
+                                KEYSTORE_PASSWORD),
+                        context.getProperty(KEY_ALIAS).getValue(),
+                        keyStore(
+                                context,
+                                SERVER_TRUST_SOURCE,
+                                "PKI Directory",
+                                TRUSTSTORE,
+                                TRUSTSTORE_PASSWORD))
+                .withOutput(outputSettings(context));
+    }
+
+    private static KeyStoreSettings keyStore(
+            ProcessContext context,
+            PropertyDescriptor source,
+            String fileSource,
+            PropertyDescriptor file,
+            PropertyDescriptor password) {
+        String type = context.getProperty(source).getValue();
+        return fileSource.equals(type)
+                ? null
+                : new KeyStoreSettings(
+                        type, path(context, file), context.getProperty(password).getValue());
+    }
+
+    private static OutputSettings outputSettings(ProcessContext context) {
+        return new OutputSettings(
+                context.getProperty(OUTPUT_FIELDS).getValue(),
+                context.getProperty(OUTPUT_FORMAT).getValue(),
+                context.getProperty(TIMESTAMP_FORMAT).getValue(),
+                context.getProperty(QUALITY_ROUTING).asBoolean(),
+                context.getProperty(BATCH_DELAY).asInteger());
     }
 
     protected AutoCloseable verifyConnection(
@@ -737,11 +1070,13 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
         }
         try {
             // Encoding runs outside the cancellation monitor. Only final admission is fenced.
-            byte[] record = encodeNotification(tag, value, limit);
+            byte[] record = encodeNotification(tag, value, limit, destination.output);
             acceptIfActive(
                     generation,
                     () -> {
-                        if (!destination.offer(record)) recordDrop(false, false);
+                        if (!destination.offer(
+                                record, destination.output.relationship(value.getStatusCode())))
+                            recordDrop(false, false);
                     });
         } catch (Exception e) {
             boolean sizeLimit = isOversized(e);
@@ -754,9 +1089,9 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
         }
     }
 
-    byte[] encodeNotification(TagDefinition tag, DataValue value, int limit)
+    byte[] encodeNotification(TagDefinition tag, DataValue value, int limit, OutputSettings output)
             throws java.io.IOException {
-        return NotificationJson.encode(tag, value, limit);
+        return NotificationJson.encode(tag, value, limit, output);
     }
 
     private void acceptIfActive(ConnectionAttempt generation, Runnable admission) {
@@ -807,7 +1142,8 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
 
     private static String redact(ProcessContext context, String description) {
         List<String> passwords = new ArrayList<>();
-        for (PropertyDescriptor property : Arrays.asList(PASSWORD, KEY_PASSWORD)) {
+        for (PropertyDescriptor property :
+                Arrays.asList(PASSWORD, KEY_PASSWORD, KEYSTORE_PASSWORD, TRUSTSTORE_PASSWORD)) {
             String password = context.getProperty(property).getValue();
             if (password != null && !password.isEmpty()) passwords.add(password);
         }
@@ -883,7 +1219,11 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
             onTrigger(context, session);
             session.commitAsync();
         } catch (Throwable t) {
-            session.rollback(true);
+            try {
+                session.rollback(true);
+            } catch (Throwable cleanup) {
+                if (cleanup != t) t.addSuppressed(cleanup);
+            }
             throw t;
         }
     }
@@ -970,20 +1310,50 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                                 new Object[] {gaps});
             }
             final NotificationBuffer pending = buffer;
-            List<byte[]> records =
-                    pending.reserve(context.getProperty(BATCH).asInteger(), bufferBatchBytes);
-            final DiagnosticSchedule reportSchedule = diagnosticSchedule;
-            final int diagnosticInterval = context.getProperty(DIAGNOSTICS_INTERVAL).asInteger();
-            final boolean emitDiagnostic =
-                    diagnosticInterval > 0
-                            && (reportSchedule.next == 0
-                                    || System.nanoTime() - reportSchedule.next >= 0)
-                            && diagnosticsPending.compareAndSet(false, true);
-            if (records.isEmpty() && !emitDiagnostic) {
+            final int batchSize = context.getProperty(BATCH).asInteger();
+            boolean ready;
+            try {
+                // A commit in progress is not an empty queue. Wait briefly for its callback
+                // instead of imposing NiFi's (usually much longer) Yield Duration.
+                long deadline = System.nanoTime() + ACTIVE_WAIT_NANOS;
+                pending.awaitAvailable(deadline);
+                ready =
+                        replaceBufferWhenDrained
+                                || pending.awaitBatch(batchSize, bufferBatchBytes, deadline);
+            } catch (java.util.concurrent.TimeoutException e) {
+                return; // The bounded wait prevents a zero-period scheduling spin.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!running || !ownsSubscription()) return;
+            Relationship destination = pending.nextRelationship();
+            if (pending.size() > 0 && !context.getAvailableRelationships().contains(destination)) {
                 context.yield();
                 return;
             }
+            final DiagnosticSchedule reportSchedule = diagnosticSchedule;
+            final int diagnosticInterval = context.getProperty(DIAGNOSTICS_INTERVAL).asInteger();
+            boolean submitted = false;
+            AtomicBoolean settled = new AtomicBoolean();
+            List<byte[]> records = Collections.emptyList();
+            boolean emitDiagnostic = false;
             try {
+                records =
+                        ready
+                                ? pending.reserve(batchSize, bufferBatchBytes)
+                                : Collections.emptyList();
+                emitDiagnostic =
+                        diagnosticInterval > 0
+                                && (reportSchedule.next == 0
+                                        || System.nanoTime() - reportSchedule.next >= 0)
+                                && diagnosticsPending.compareAndSet(false, true);
+                if (records.isEmpty() && !emitDiagnostic) {
+                    if (pending.size() == 0) context.yield();
+                    return;
+                }
+                final int recordCount = records.size();
+                final boolean diagnosticClaimed = emitDiagnostic;
                 if (emitDiagnostic) {
                     byte[] report =
                             JSON.writeValueAsBytes(
@@ -1002,29 +1372,46 @@ public class SubscribeOpcUa extends AbstractSessionFactoryProcessor implements V
                             records,
                             bufferEndpoint,
                             bufferSecurityPolicy,
-                            bufferSecurityMode);
+                            bufferSecurityMode,
+                            pending.output,
+                            destination);
                 }
                 session.commitAsync(
                         () -> {
-                            if (!records.isEmpty()) pending.acknowledge(records.size());
-                            if (emitDiagnostic) {
-                                reportSchedule.next =
-                                        System.nanoTime() + diagnosticInterval * 1000000000L;
-                                diagnosticsPending.set(false);
+                            if (settled.compareAndSet(false, true)) {
+                                if (recordCount > 0) pending.acknowledge(recordCount);
+                                if (diagnosticClaimed) {
+                                    reportSchedule.next =
+                                            System.nanoTime() + diagnosticInterval * 1000000000L;
+                                    diagnosticsPending.set(false);
+                                }
                             }
                         },
                         error -> {
+                            if (settled.compareAndSet(false, true)) {
+                                if (recordCount > 0) pending.release();
+                                if (diagnosticClaimed) diagnosticsPending.set(false);
+                                getLogger()
+                                        .error(
+                                                "OPC UA FlowFile commit failed; notifications"
+                                                        + " retained for retry");
+                            }
+                        });
+                submitted = true;
+            } catch (Exception | Error e) {
+                if (!submitted && !settled.get()) {
+                    try {
+                        session.rollback();
+                    } catch (Exception | Error cleanup) {
+                        if (cleanup != e) e.addSuppressed(cleanup);
+                    } finally {
+                        if (settled.compareAndSet(false, true)) {
                             if (!records.isEmpty()) pending.release();
                             if (emitDiagnostic) diagnosticsPending.set(false);
-                            getLogger()
-                                    .error(
-                                            "OPC UA FlowFile commit failed; notifications retained"
-                                                    + " for retry");
-                        });
-            } catch (Exception e) {
-                if (!records.isEmpty()) pending.release();
-                if (emitDiagnostic) diagnosticsPending.set(false);
-                session.rollback();
+                        }
+                    }
+                }
+                if (e instanceof Error) throw (Error) e;
                 throw new ProcessException(
                         "Could not commit OPC UA batch; notifications retained for retry", e);
             }

@@ -1,8 +1,21 @@
 # Installation, upgrade and rollback
 
+The current development branch builds **1.0.5-SNAPSHOT** with processor type `io.github.paf91.nifi.opcua.ConsumeOPCUA` and bundle `io.github.paf91.nifi:nifi-opcua-nar:1.0.5-SNAPSHOT`. It provides no `SubscribeOpcUa` compatibility type. Existing installations need the [processor migration](namespace-migration.md) before replacing their old NAR.
+
+Release **1.0.4** retains its original `SubscribeOpcUa` type and artifact names. Its installation and upgrade instructions remain below.
+
 [Configuration reference](configuration.md) · [Troubleshooting](troubleshooting.md)
 
 ## Pick the artifact
+
+Development build:
+
+| Target | Artifact |
+|---|---|
+| NiFi 1.23.2 / Java 8 | `nifi-opcua-1.23.2-1.0.5-SNAPSHOT.nar` |
+| NiFi 2.12.0 / Java 21 | `nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar` |
+
+Released version 1.0.4:
 
 | Target | Artifact |
 |---|---|
@@ -23,7 +36,7 @@ nifi.nar.working.directory=/opt/nifi/work/nar/
 
 copy the complete NAR into `/opt/nifi/extensions`. Stage it outside the watched directory, then move the completed file into place (use the same filesystem for an atomic rename). NiFi's service account needs read access and directory traversal permission.
 
-Wait for NiFi to load the extension, refresh the browser, and search for **SubscribeOpcUa** in Add Processor. First-time autoload does not require restart. Do not put files into `work/nar`: it is managed by NiFi. Do not keep duplicate copies of this bundle across library directories.
+Wait for NiFi to load the extension, refresh the browser, and search for **ConsumeOPCUA** in Add Processor for the development build, or **SubscribeOpcUa** for release 1.0.4. First-time autoload does not require restart. Do not put files into `work/nar`: it is managed by NiFi. Keep only one copy of each bundle's coordinates across all configured NAR library and autoload directories.
 
 ## Installation using a custom library
 
@@ -48,22 +61,42 @@ These mechanisms are documented in the [NiFi 1.23.2 administration guide](https:
 
 ## Upgrade
 
+The move from `SubscribeOpcUa` to `ConsumeOPCUA` changes both the stored processor type and the bundle artifact. Follow the [processor migration](namespace-migration.md), which recreates processors and connections. **Change version** does not perform this migration, even when the old and new builds both use version `1.0.5-SNAPSHOT`.
+
+For an installed `ConsumeOPCUA`, use **Change version** only for a target with the same processor type, Maven group and artifact. Stop and drain in-memory notifications before changing versions, or explicitly accept their loss. Back up the flow and installed NAR, deploy the target to every cluster node, check properties and relationships, run Verify, and confirm fresh data after starting.
+
+When upgrading an earlier development build, review the [password-protection migration checks](configuration.md#password-protection-migration) before Verify or Start. Sign channels with plaintext username tokens now fail by default. None channels offering both encrypted and unencrypted tokens select encryption and require server trust with Full or Certificate validation.
+
+### Upgrading the earlier processor to release 1.0.4
+
+These steps apply to the earlier GitHub-aligned `SubscribeOpcUa` type and `nifi-opcua-subscriber-nar` artifact:
+
 1. Record the installed NAR checksum, processor properties and flow configuration using your normal secure backup procedure.
 2. Stop the source and drain pending data according to your ingestion policy. NiFi restart and processor version changes discard this processor's in-memory pending records.
-3. Install the new version alongside the previous version under their distinct filenames. Install the matching NiFi target on every cluster node. Restart NiFi when using a custom library directory; a new bundle version can also use autoload.
-4. On the stopped `SubscribeOpcUa` processor, use **Change version** and select **1.0.4**. Confirm that its bundle group is `io.github.paf91.nifi`, artifact is `nifi-opcua-subscriber-nar`, and version is `1.0.4`. NiFi stores this bundle version with the flow.
+3. Install release 1.0.4 alongside the previous version under its distinct filename. Install the matching NiFi target on every cluster node. Restart NiFi when using a custom library directory; a new bundle version can also use autoload.
+4. On the stopped `SubscribeOpcUa`, use **Change version** and select **1.0.4**. Confirm bundle group `io.github.paf91.nifi`, artifact `nifi-opcua-subscriber-nar` and version `1.0.4`.
 5. Check properties, relationships and validation, run Verify, then start and confirm fresh data. Once no components reference the previous bundle, remove its NAR during a maintenance restart.
 
-The new **Server Certificate Validation** property defaults to **Full**, preserving existing checks when upgrading from 1.0.1 or earlier. Review any deliberate change to Certificate or None before starting.
+**Server Certificate Validation** defaults to **Full**, preserving existing checks when upgrading from 1.0.1 or earlier. Review any deliberate change to Certificate or None before starting. See NiFi's [component version instructions](https://nifi.apache.org/nifi-docs/user-guide.html#changing-component-versions). Earlier private `ai.paf91.nifi` types need the processor migration instead.
 
-See NiFi's [component version instructions](https://nifi.apache.org/nifi-docs/user-guide.html#changing-component-versions). This applies to the existing GitHub-aligned processor type; older private processor types need the [identity migration](namespace-migration.md).
+## Replacing a build with the same bundle coordinates
 
-For a replacement with identical bundle coordinates, use a Stop/restart maintenance procedure. Keep only one copy of each identical bundle version across scanned directories. Do not delete repositories or NiFi's working directories as a routine upgrade step.
+After migrating or installing the new artifact, use this procedure to replace one `io.github.paf91.nifi:nifi-opcua-nar:1.0.5-SNAPSHOT` build with another. **Change version** cannot distinguish builds with identical group, artifact and version. The earlier `nifi-opcua-subscriber-nar:1.0.5-SNAPSHOT` has a different artifact and requires the processor migration above.
+
+1. Record the installed NAR's SHA-256 and source commit, and back up the flow configuration and properties securely.
+2. Stop the source. Confirm that its memory buffer drained successfully, resolve any remaining records, or explicitly decide to discard them before restarting NiFi.
+3. Stop NiFi on every cluster node. Move the installed NAR outside every configured NAR library and autoload directory, and retain it as a backup.
+4. Install exactly one copy of the replacement for those bundle coordinates across all scanned directories on each node. Use the same NAR bytes on every cluster node and retain the replacement's checksum and source commit.
+5. Restart NiFi, check that the `ConsumeOPCUA` processors resolve, run Verify, then start and confirm fresh data.
+
+Do not delete repositories or NiFi's working directories as a routine upgrade step. A restart loses any notifications still held in processor memory.
 
 ## Rollback
 
-Stop the source, make the previous NAR available, and use Change version to select its bundle version. Restore compatible flow/properties from the secure backup if the processor contract changed. Remove unused versions during a maintenance restart. NiFi repositories and flow backups must remain consistent; do not roll them back independently without the installation's recovery procedure. A NAR rollback does not restore notifications lost from memory.
+A rollback from `ConsumeOPCUA` to the earlier type requires the previous NAR and a compatible flow backup. First stop the new source and successfully drain its memory and downstream queues, or explicitly decide to discard their remaining data. Follow the [migration rollback procedure](namespace-migration.md#rollback). **Change version** does not restore the old processor type or artifact.
+
+For a rollback between builds with identical `nifi-opcua-nar` coordinates, use the maintenance replacement procedure above with the previous NAR. NiFi repositories and flow backups must remain consistent. Do not roll them back independently or delete caches and repositories to resolve a missing processor type. A NAR rollback does not restore notifications lost from memory.
 
 ## Cluster requirements
 
-Deploy the same NAR and certificate/trust paths on all eligible nodes. The source is restricted to the primary node. A new primary creates a fresh subscription; the old node's memory queue is not replicated. Confirm certificate identity and trust requirements with the OPC server administrator when provisioning multiple clients. Complete the [cluster acceptance checks](operations.md#cluster-acceptance) before production failover use.
+Deploy the same NAR bytes and certificate/trust paths on all eligible nodes. Install the NAR containing `ConsumeOPCUA` on every cluster node before adding that type to the flow. The source is restricted to the primary node. A new primary creates a fresh subscription; the old node's memory queue is not replicated. Confirm certificate identity and trust requirements with the OPC server administrator when provisioning multiple clients. Complete the [cluster acceptance checks](operations.md#cluster-acceptance) before production failover use.

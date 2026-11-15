@@ -17,13 +17,17 @@ for g in root['flow']['processGroups']:
         print('Demo already exists:',g['id']);raise SystemExit(0)
 types=api('GET','/flow/processor-types')['processorTypes']
 def processor_type(suffix):
+    if suffix=='ConsumeOPCUA':
+        return next(t for t in types if t['type']=='io.github.paf91.nifi.opcua.ConsumeOPCUA'
+                    and t['bundle']['group']=='io.github.paf91.nifi'
+                    and t['bundle']['artifact']=='nifi-opcua-nar')
     return next(t for t in types if t['type'].endswith('.'+suffix))
 group=api('POST',f'/process-groups/{root_id}/process-groups',{'revision':{'version':0},'component':{'name':'OPC UA Subscription Demo','position':{'x':250,'y':150}}})
 gid=group['id']
 def add_processor(kind,name,x,y,config):
     t=processor_type(kind)
     return api('POST',f'/process-groups/{gid}/processors',{'revision':{'version':0},'component':{'type':t['type'],'bundle':t['bundle'],'name':name,'position':{'x':x,'y':y},'config':config}})
-source=add_processor('SubscribeOpcUa','Subscribe OPC UA — DemoSwitch + server time',150,180,{
+source=add_processor('ConsumeOPCUA','ConsumeOPCUA — DemoSwitch + server time',150,180,{
     'schedulingPeriod':'100 ms','schedulingStrategy':'TIMER_DRIVEN','concurrentlySchedulableTaskCount':1,
     'properties':{
         'Endpoint URL':'opc.tcp://opcua:4840/demo',
@@ -39,7 +43,7 @@ connection=api('POST',f'/process-groups/{gid}/connections',{'revision':{'version
     'destination':{'id':sink['id'],'groupId':gid,'type':'PROCESSOR'},
     'selectedRelationships':['success'],'backPressureObjectThreshold':1000,'backPressureDataSizeThreshold':'10 MB','flowFileExpiration':'10 mins'}})
 api('POST',f'/process-groups/{gid}/labels',{'revision':{'version':0},'component':{
-    'label':'1. Configure Subscribe OPC UA → Properties.\n2. Paste your NodeId list into Tags, then enable and start.\n3. List queue → View content. Stop the source when finished.\nDemo uses SignAndEncrypt / Basic256Sha256 + certificate + username/password.',
+    'label':'1. Configure ConsumeOPCUA → Properties.\n2. Paste your NodeId list into Tags, then enable and start.\n3. List queue → View content. Stop the source when finished.\nDemo uses SignAndEncrypt / Basic256Sha256 + certificate + username/password.',
     'position':{'x':120,'y':20},'width':640,'height':130,'style':{'font-size':'14px'}}})
 # Wait for NiFi's asynchronous validation to complete.
 for _ in range(30):

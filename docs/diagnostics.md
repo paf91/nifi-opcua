@@ -4,7 +4,7 @@ NiFi **Verify** uses the configured endpoint, security/authentication and tag li
 
 Verification can consume an extra server session and subscription, even if the processor is running. It does not emit measurements, alter the running connection, or drain its buffer. Success confirms connection and monitored-item creation, not that every sensor currently has Good quality; some servers report read/access problems through subsequent data-change status codes. Inspect actual records as well.
 
-Set **Diagnostics Interval (seconds)** to a positive value to enable periodic health FlowFiles. The default is **0**, disabled. Connect `diagnostics` to your monitoring flow; it is automatically terminated by default so existing flows remain valid. Each report is a JSON object with `mime.type=application/json` and `opcua.type=diagnostics`. Success FlowFiles continue to contain measurement arrays.
+Set **Diagnostics Interval (seconds)** to a positive value to enable periodic health FlowFiles. The default is **0**, disabled. Connect `diagnostics` to your monitoring flow; it is automatically terminated by default so existing flows remain valid. Each report is a JSON object with `mime.type=application/json` and `opcua.type=diagnostics`. Measurement FlowFiles use the configured JSON Array or NDJSON format.
 
 | Field | Meaning |
 |---|---|
@@ -29,7 +29,7 @@ The connection section distinguishes:
 - `lastNotificationReceivedAt`: any data-change callback, including Bad/Uncertain or locally dropped records.
 - `lastGoodValueReceivedAt`: a callback with Good status; this does not prove recent sampling at the source.
 - `sessionActivations`: activations within this connection, including reactivation of the same session.
-- `settingsMayBeStale`: Milo opened a different session after the initial metadata was read. Numeric-only subscriptions can continue through SDK transfer/recreation, so their original namespace/negotiated snapshot is marked stale. Use Verify to inspect a fresh independent snapshot, or establish a new processor connection to replace the periodic snapshot. URI-configured subscriptions request a full rebuild on a different session.
+- `settingsMayBeStale`: Milo activated a session with a different ID from this connection's first session, so the setup-time namespace and negotiated-settings snapshot may be stale. Subscriptions without namespace-URI tags or selected cached metadata can continue through SDK transfer or recreation. Namespace-URI tags or selected cached metadata cause the processor to request a full connection rebuild before accepting more values. Verify captures a fresh independent snapshot. It does not refresh the running connection's periodic snapshot.
 
 A stable value need not produce repeated notifications. Neither an old source timestamp nor a missing new value alone proves disconnection. Use keep-alives, session state, quality, expected process behavior and elapsed time together. Timestamps measure local receipt unless explicitly named as source timestamps.
 

@@ -31,7 +31,7 @@ final class OpcConnection implements AutoCloseable {
     private BoundedOpcUaClient client;
     private NioEventLoopGroup eventLoop;
     private OpcUaSubscription subscription;
-    private FileBasedTrustListManager trust;
+    private java.io.Closeable trust;
     private volatile boolean active = true;
     private final long timeout;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -88,12 +88,23 @@ final class OpcConnection implements AutoCloseable {
             if (settings.serverCertificateValidation() == ServerCertificateValidation.NONE) {
                 validator = serverValidator(settings.serverCertificateValidation(), null);
             } else if (settings.security().requiresServerTrust(endpoint)) {
-                if (settings.pki() == null)
-                    throw new IllegalArgumentException(
-                            "PKI Directory is required to validate this endpoint's server"
-                                    + " certificate, including encrypted username tokens");
-                trust = FileBasedTrustListManager.createAndInitialize(settings.pki());
-                validator = serverValidator(settings.serverCertificateValidation(), trust);
+                TrustListManager manager;
+                if (settings.serverTrustStore() != null) {
+                    StoreTrustListManager store =
+                            new StoreTrustListManager(settings.serverTrustStore(), settings.pki());
+                    trust = store;
+                    manager = store;
+                } else {
+                    if (settings.pki() == null)
+                        throw new IllegalArgumentException(
+                                "PKI Directory or Server Truststore File is required to validate"
+                                        + " this endpoint's server certificate, including encrypted"
+                                        + " username tokens");
+                    FileBasedTrustListManager directory = TrustDirectory.open(settings.pki());
+                    trust = directory;
+                    manager = directory;
+                }
+                validator = serverValidator(settings.serverCertificateValidation(), manager);
             }
             attempt.check();
             client =
@@ -116,12 +127,11 @@ final class OpcConnection implements AutoCloseable {
                                     () -> {
                                         boolean changed =
                                                 diagnostics.sessionActive(session.getSessionId());
-                                        if (changed && resolveUris) {
-                                            // A transferred subscription contains old numeric
-                                            // NodeIds. Recreate
-                                            // it
-                                            // from the original URI configuration before accepting
-                                            // more values.
+                                        if (changed
+                                                && (resolveUris || settings.output().metadata())) {
+                                            // Request a rebuild on a new session to refresh
+                                            // namespace-URI resolution or selected tag metadata
+                                            // before accepting more values.
                                             active = false;
                                             recovery.run();
                                             attempt.cancel();
@@ -148,6 +158,22 @@ final class OpcConnection implements AutoCloseable {
                 diagnostics.namespaceUnavailable();
             }
             List<TagDefinition> resolvedTags = TagResolver.resolve(settings.tags(), namespaces);
+            if (settings.output().metadata()) {
+                final OpcUaClient metadataClient = client;
+                resolvedTags =
+                        new TagMetadataReader(
+                                        attempt,
+                                        settings.requestTimeout(),
+                                        requests ->
+                                                metadataClient.readAsync(
+                                                        0.0, TimestampsToReturn.Neither, requests),
+                                        metadataClient::translateBrowsePathsAsync,
+                                        metadataClient.getNamespaceTable(),
+                                        extension ->
+                                                extension.decode(
+                                                        metadataClient.getStaticEncodingContext()))
+                                .load(resolvedTags, settings.output(), diagnostics);
+            }
             diagnostics.stage("Creating subscription and monitored items");
             subscription = new OpcUaSubscription(client, settings.publishingInterval());
             subscription.setMaxMonitoredItemsPerCall(uint(100));
@@ -201,8 +227,12 @@ final class OpcConnection implements AutoCloseable {
                     subscription.getRevisedPublishingInterval().orElse(0.0));
             client.setupComplete();
             diagnostics.stage("Subscribed");
-        } catch (Exception e) {
-            close();
+        } catch (Exception | Error e) {
+            try {
+                close();
+            } catch (Exception | Error cleanup) {
+                if (cleanup != e) e.addSuppressed(cleanup);
+            }
             throw e;
         }
     }

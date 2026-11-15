@@ -91,8 +91,9 @@ final class StopDrain implements Runnable {
         if (deadline - System.nanoTime() <= 0) throw new TimeoutException();
         if (!permitted.getAsBoolean())
             throw new Unavailable("processor restarted or lost ownership");
-        if (!context.getAvailableRelationships().contains(SubscribeOpcUa.SUCCESS))
-            throw new Unavailable("success relationship is backpressured");
+        Relationship relationship = buffer.nextRelationship();
+        if (!context.getAvailableRelationships().contains(relationship))
+            throw new Unavailable(relationship.getName() + " relationship is backpressured");
     }
 
     @Override
@@ -131,7 +132,14 @@ final class StopDrain implements Runnable {
             check();
             session = factory.createSession();
             check();
-            NotificationBatch.write(session, records, endpoint, policy, mode);
+            NotificationBatch.write(
+                    session,
+                    records,
+                    endpoint,
+                    policy,
+                    mode,
+                    buffer.output,
+                    buffer.nextRelationship());
             check();
             session.commitAsync(
                     () -> {

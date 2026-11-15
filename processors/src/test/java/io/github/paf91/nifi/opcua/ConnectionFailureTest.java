@@ -16,7 +16,7 @@ import java.util.concurrent.*;
 class ConnectionFailureTest {
     private TestRunner failingRunner(Exception failure) {
         return ProcessorTest.configured(
-                new SubscribeOpcUa() {
+                new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable openConnection(
                             ProcessContext context, ConnectionAttempt attempt) throws Exception {
@@ -84,8 +84,8 @@ class ConnectionFailureTest {
                         new IllegalStateException(
                                 "Could not connect\r\npassword=" + password,
                                 new IllegalArgumentException("key=" + keyPassword + "\u2028end")));
-        runner.setProperty(SubscribeOpcUa.PASSWORD, password);
-        runner.setProperty(SubscribeOpcUa.KEY_PASSWORD, keyPassword);
+        runner.setProperty(ConsumeOPCUA.PASSWORD, password);
+        runner.setProperty(ConsumeOPCUA.KEY_PASSWORD, keyPassword);
         String log = failureLog(runner);
         assertTrue(log.contains("Could not connect"), log);
         assertTrue(log.contains("password=[redacted]"), log);

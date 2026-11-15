@@ -4,19 +4,25 @@ Start with `logs/nifi-app.log`, processor bulletins, validation errors and queue
 
 | Symptom | Check |
 |---|---|
-| SubscribeOpcUa is missing | Correct library/autoload path, readable complete NAR, duplicate bundles and NAR loading errors; refresh UI |
+| ConsumeOPCUA is missing | Release 1.0.4 provides only SubscribeOpcUa. Check for the development `nifi-opcua-nar` bundle on every cluster node, its checksum, library/autoload paths and NAR loading errors, then refresh the UI |
+| SubscribeOpcUa is unresolved after installing the new NAR | The current NAR provides only ConsumeOPCUA. Follow the [processor migration](namespace-migration.md). Change version does not convert the changed processor type and artifact |
+| Rebuilt SNAPSHOT still behaves like the previous build | For identical `nifi-opcua-nar` coordinates, Change version cannot distinguish builds. Follow the [maintenance replacement procedure](installation.md#replacing-a-build-with-the-same-bundle-coordinates), keep backups outside all scanned directories and restart NiFi |
+| ConsumeOPCUA is unresolved after rollback | Drain or explicitly discard any remaining downstream queued data, then restore a flow backup compatible with the old NAR using the [rollback procedure](namespace-migration.md#rollback). Notifications left in processor memory were lost when NiFi restarted. |
+| Seeder reports an existing demo but its source is unresolved | The seeder does not migrate existing flows. Migrate the persisted preview before using the new NAR, or follow the [fresh, separate demo instructions](demo.md) |
 | UnsupportedClassVersionError | Wrong NAR/JVM combination; modern needs Java 21 |
 | Processor is restricted | Administrator authorization for filesystem read/write restricted components |
 | Invalid Tags | Complete parseable NodeIds; unique aliases/NodeIds; JSON keys and numeric ranges |
 | File not found / access denied | Absolute paths inside the NiFi host/container; service account permissions |
 | Certificate URI error | During Loading client identity: client certificate must have exactly one absolute URI SAN; leave Application URI unset or match it exactly. During Opening authenticated session: also check that the server's advertised Application URI matches its server certificate URI SAN |
 | Certificate/key mismatch | Use the matching RSA private key and leaf certificate, leaf first in a PEM chain |
-| Bad_CertificateUntrusted | Client trust on the OPC server and server/CA trust in NiFi's PKI directory |
+| Bad_CertificateUntrusted | The OPC server must trust the client identity on secured channels. NiFi must trust the approved server certificate or CA through the selected Server Trust Source |
 | Bad_CertificateHostNameInvalid | Host in the selected server-advertised endpoint must match its certificate DNS/IP SAN; a literal IP needs an IPAddress SAN. Certificate validation mode skips only this match while retaining trust and Application URI checks |
 | Expiry or revocation failure | Clock, certificate validity and required issuer certificates/CRLs; Certificate mode retains these checks |
 | Bad_UserAccessDenied / identity rejection | Username/password and access rights on the server; certificate trust alone is not user authorization |
 | No OPC TCP endpoint for configured settings | Match Security Policy, Security Mode and Authentication to a server endpoint; selection never downgrades automatically |
-| None/None login asks for PKI | The server encrypts username tokens separately from its channel; trust the server certificate in PKI Directory; no client certificate/key is required |
+| Username token rejected by Allow Unencrypted Password | Use an encrypted username token or SignAndEncrypt. The Never setting rejects plaintext tokens on None/None and Sign; the default None channels only rejects them on Sign. Always (insecure) permits deliberate plaintext compatibility. Certificate validation does not control this rejection |
+| None/None login asks for server trust | A supported encrypted username token is preferred even when plaintext is also advertised. With Full or Certificate validation, trust the server certificate through the selected Server Trust Source. No client identity is needed, and a trust failure does not cause a plaintext retry |
+| Truststore exposes no entries after loading | The store may be empty, or PKCS12 certificates may lack Java trusted-entry markers and be invisible to the JVM provider. Check with the NiFi JDK and import approved certificates with keytool. A visible store containing only private-key entries also supplies no trust anchors. Password/integrity failures are separate loading errors. See [server trust sources](configuration.md#server-trust-sources) |
 | Anonymous configuration asks for client certificate | Sign and SignAndEncrypt still authenticate the client application; choose None/None only for an endpoint that offers it |
 | Connection to an unexpected hostname | OPC discovery may advertise another host; fix DNS/network/server configuration |
 | RUNNING but no data | Bulletins, endpoint reachability, primary role, outbound backpressure and node permissions |

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.5-SNAPSHOT — Efficient encoding and configurable ETL output (unreleased)
+
+- Rename the sole processor type to `io.github.paf91.nifi.opcua.ConsumeOPCUA` and remove `SubscribeOpcUa`. Existing processors must be recreated with new IDs and connections using the [migration procedure](docs/namespace-migration.md). NiFi's Change version does not migrate the changed type and bundle artifact.
+- Rename local Maven artifacts to `nifi-opcua-bundle`, `nifi-opcua-processors`, `nifi-opcua-nar` and `nifi-opcua-demo-server`. Development NAR filenames use `nifi-opcua-<NiFi version>-1.0.5-SNAPSHOT.nar`, and the source archive is `nifi-opcua-source.tar.gz`. Maven group `io.github.paf91.nifi`, version `1.0.5-SNAPSHOT` and default Application URI `urn:nifi:opcua:subscriber` remain unchanged. The Application URI identifies the OPC UA client and does not make old NiFi processor types compatible.
+- Write scalar and primitive-array values directly to the JSON generator; eliminate per-element object-serializer flushes and boxing for primitive numeric arrays. Cache resolved tag NodeId text with size checks.
+- Wait at most 50 ms for an in-flight commit instead of applying NiFi's full Yield Duration to queued records. Preserve the single reserved batch and bounded shutdown behavior.
+- Roll back synchronous delivery failures before releasing batch and diagnostics reservations, including failures raised as `Error`. Keep submitted commits reserved until their callback settles them, and close connection-owned resources if either adapter constructor fails.
+- Use queue count, bytes and adjacent-route transitions for constant-time delayed-batch readiness checks. Preserve FIFO order, route boundaries, framing, age and pressure flushing.
+- Declare emitted FlowFile attributes in generated processor help, distinguishing measurements, diagnostics and retained output settings.
+- Add Output Fields, Output Format (JSON Array or NDJSON), Timestamp Format (ISO-8601 or Epoch Milliseconds), Route by Quality, and Maximum Batch Delay (ms). Defaults retain existing fields, framing, immediate available batching and the success route.
+- Preserve output configuration with buffered records across Stop/Start, retries and stop-time draining. Account for NDJSON newlines in byte limits. Route Bad and Uncertain/missing statuses without inspecting projected JSON or reordering records.
+- Add optional serverTimestamp, dataType and engineeringUnits fields. Load requested tag metadata in adaptive batches of up to 100 operations, with one Request Timeout budget, cancellation and bounded cached strings; unavailable metadata remains null. Refresh on a new session; no metadata reads occur per notification.
+- Correct pre-1970 DateTime conversion, preserving OPC UA 100 ns precision for ISO timestamps and explicitly truncating to milliseconds when requested.
+- Add output, timestamp, batching, commit-wait, metadata, allocation and independent-server regressions for both Java profiles. Keep release 1.0.4 artifacts unchanged; this is an unpublished development version.
+- Add bounded tag/value sequence checks and periodic fresh-delivery checks to runtime acceptance, with optional per-node sampled heap/thread ceilings. Require profile-specific independent-server reports, including modern setup tests.
+- Add JKS and PKCS12 client identity stores and server truststores with explicit format selection, optional independent store/key passwords and deterministic private-key alias selection. Preserve PEM/DER and PKI-directory defaults.
+- Keep truststore anchors separate from private-key chains and optional PKI issuer/CRL material. Preserve Full/Certificate revocation checks, read stores without modifying them and reload them for each new processor connection. Clear owned password arrays on identity-load failures as well as success.
+- Require final runtime cleanup to observe a stopped processor and zero sessions, subscriptions and monitored items. Record the acceptance script hash and source dirty state alongside its repository commit.
+- Prefer supported encrypted username tokens on every channel. Add Allow Unencrypted Password with None channels only (default), Never and Always (insecure). The Never setting accepts a None-policy token on SignAndEncrypt because the channel encrypts it. Always permits plaintext compatibility without overriding encrypted-token preference or retrying plaintext after certificate validation fails.
+- Require migration checks for Sign channels with plaintext username tokens and None channels advertising both encrypted and unencrypted tokens. The former now fail by default; the latter select encryption and require server trust with Full or Certificate validation. See [password-protection migration](docs/configuration.md#password-protection-migration).
+- Report an empty provider view of a truststore separately from visible entries without trusted certificates, after successful store loading. Explain PKCS12 trusted-entry markers and preserve password/integrity failures.
+- Manage legacy Guava at 33.8.0-jre. Modern Milo 1.1.8 embeds relocated Guava 33.7.2, which this dependency-management entry does not change.
+- Use a shared Maven settings file to mirror only dash-licenses-releases and rso-public-grid to Maven Central in CI and release builds. Bound CI jobs to 60 minutes while retaining enforced NAR documentation generation.
+- Return failed futures for modern setup requests cancelled before submission, preserving cleanup requests and atomic cancellation checks.
+
 ## 1.0.4 — Bounded stop draining and lower callback allocation (2026-10-22)
 
 - Close ingress first, then attempt to drain buffered notifications on Stop. Add `Stop Drain Timeout (ms)`, default 5000 and configurable from 0 to 30000; zero disables the attempt. Warn only when records remain after draining is unavailable, fails or reaches its deadline.
@@ -92,4 +117,4 @@ Existing demo flows are not overwritten by the seeder. After rebuilding the demo
 
 - Separate legacy and modern NARs, secured subscriptions, JSON output and local NiFi demo.
 
-Preview entries describe historical development milestones built as `1.0.0-SNAPSHOT`. The current Maven version is `1.0.3`; validation limits remain documented per release.
+Preview entries describe historical development milestones built as `1.0.0-SNAPSHOT`. Validation limits remain documented per release.

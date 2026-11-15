@@ -20,7 +20,7 @@ import java.util.concurrent.*;
 class Open62541RecoveryTest {
     @TempDir Path dir;
     private Open62541Test server;
-    private SubscribeOpcUa processor;
+    private ConsumeOPCUA processor;
     private TestRunner runner;
 
     @BeforeEach
@@ -29,7 +29,7 @@ class Open62541RecoveryTest {
         server.dir = dir;
         server.setup();
         server.start(false, "None");
-        processor = new SubscribeOpcUa();
+        processor = new ConsumeOPCUA();
         runner = server.processor(processor);
     }
 
@@ -47,7 +47,7 @@ class Open62541RecoveryTest {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(25);
         while (System.nanoTime() < deadline) {
             runner.run(1, false, false);
-            for (MockFlowFile f : runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)) {
+            for (MockFlowFile f : runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)) {
                 for (JsonNode value :
                         new ObjectMapper().readTree(runner.getContentAsByteArray(f))) {
                     if (value.get("value").asDouble() == wanted

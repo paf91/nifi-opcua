@@ -132,15 +132,15 @@ class TagListTest {
     void validatesBulkOnlyConfigurationAndOptionalApplicationUri() {
         TestRunner runner = ProcessorTest.configured(new ProcessorTest.OfflineProcessor());
         runner.removeProperty("DemoSwitch");
-        runner.removeProperty(SubscribeOpcUa.APPLICATION_URI);
-        runner.setProperty(SubscribeOpcUa.TAG_LIST, "DemoSwitch | ns=2;s=Demo.Boolean");
+        runner.removeProperty(ConsumeOPCUA.APPLICATION_URI);
+        runner.setProperty(ConsumeOPCUA.TAG_LIST, "DemoSwitch | ns=2;s=Demo.Boolean");
         runner.assertValid();
         runner.setProperty("DemoSwitch", "ns=2;s=another");
         runner.assertNotValid();
         runner.removeProperty("DemoSwitch");
-        runner.setProperty(SubscribeOpcUa.TAG_LIST, "# empty list");
+        runner.setProperty(ConsumeOPCUA.TAG_LIST, "# empty list");
         runner.assertNotValid();
-        runner.setProperty(SubscribeOpcUa.TAG_LIST, "[\"ns=0;i=2258\"]");
+        runner.setProperty(ConsumeOPCUA.TAG_LIST, "[\"ns=0;i=2258\"]");
         runner.assertValid();
     }
 }

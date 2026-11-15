@@ -136,7 +136,11 @@ public final class DemoServer {
         int loadTags = Integer.parseInt(System.getenv().getOrDefault("DEMO_LOAD_TAGS", "0"));
         if (loadTags < 0 || loadTags > 10000)
             throw new IllegalArgumentException("DEMO_LOAD_TAGS must be 0..10000");
-        DemoNamespace namespace = new DemoNamespace(server, loadTags, security);
+        String loadValueMode = System.getenv().getOrDefault("DEMO_LOAD_VALUE_MODE", "tick");
+        if (!"tick".equals(loadValueMode) && !"indexed".equals(loadValueMode))
+            throw new IllegalArgumentException("DEMO_LOAD_VALUE_MODE must be tick or indexed");
+        DemoNamespace namespace =
+                new DemoNamespace(server, loadTags, security, "indexed".equals(loadValueMode));
         namespace.startup();
         server.startup().get();
         Runtime.getRuntime()
@@ -162,11 +166,13 @@ public final class DemoServer {
         final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
         final UaVariableNode tag;
         final List<UaVariableNode> loadNodes = new java.util.ArrayList<>();
+        final boolean indexedLoadValues;
         long tick;
         boolean state;
 
-        DemoNamespace(OpcUaServer server, int loadTags, Path security) {
+        DemoNamespace(OpcUaServer server, int loadTags, Path security, boolean indexedLoadValues) {
             super(server, "urn:opcua:demo:tags");
+            this.indexedLoadValues = indexedLoadValues;
             subscriptions = new SubscriptionModel(server, this);
             getLifecycleManager().addLifecycle(subscriptions);
             tag =
@@ -191,7 +197,7 @@ public final class DemoServer {
                                 .setTypeDefinition(Identifiers.BaseDataVariableType)
                                 .setAccessLevel(AccessLevel.CurrentRead)
                                 .setUserAccessLevel(AccessLevel.CurrentRead)
-                                .setValue(new DataValue(new Variant(0.0)))
+                                .setValue(new DataValue(new Variant(loadValue(i))))
                                 .build();
                 getNodeManager().addNode(node);
                 loadNodes.add(node);
@@ -203,13 +209,16 @@ public final class DemoServer {
                                             () -> {
                                                 state = !state;
                                                 tick++;
-                                                for (UaVariableNode node : loadNodes) {
-                                                    node.setValue(
-                                                            new DataValue(
-                                                                    new Variant((double) tick),
-                                                                    StatusCode.GOOD,
-                                                                    DateTime.now(),
-                                                                    DateTime.now()));
+                                                for (int i = 0; i < loadNodes.size(); i++) {
+                                                    loadNodes
+                                                            .get(i)
+                                                            .setValue(
+                                                                    new DataValue(
+                                                                            new Variant(
+                                                                                    loadValue(i)),
+                                                                            StatusCode.GOOD,
+                                                                            DateTime.now(),
+                                                                            DateTime.now()));
                                                 }
                                                 if (loadTags > 0) {
                                                     String metrics =
@@ -257,6 +266,10 @@ public final class DemoServer {
                                             1,
                                             TimeUnit.SECONDS));
             getLifecycleManager().addShutdownTask(() -> timer.shutdownNow());
+        }
+
+        private double loadValue(int tagIndex) {
+            return indexedLoadValues ? tick * 10000.0 + tagIndex : tick;
         }
 
         @Override

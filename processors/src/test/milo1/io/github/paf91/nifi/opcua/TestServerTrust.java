@@ -5,9 +5,25 @@ import org.eclipse.milo.opcua.stack.core.security.FileBasedTrustListManager;
 
 import java.nio.file.Path;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 import java.util.List;
 
 final class TestServerTrust {
+    static String issuerDirectory() {
+        return "issuer";
+    }
+
+    static List<String> directoryPaths() {
+        return Arrays.asList(
+                "",
+                "issuer",
+                "issuer/certs",
+                "issuer/crl",
+                "trusted",
+                "trusted/certs",
+                "trusted/crl");
+    }
+
     static void validate(
             ServerCertificateValidation mode,
             Path pki,
@@ -15,9 +31,25 @@ final class TestServerTrust {
             String uri,
             String host)
             throws Exception {
+        validate(mode, pki, null, chain, uri, host);
+    }
+
+    static void validate(
+            ServerCertificateValidation mode,
+            Path pki,
+            KeyStoreSettings store,
+            List<X509Certificate> chain,
+            String uri,
+            String host)
+            throws Exception {
         if (mode == ServerCertificateValidation.NONE) {
             OpcConnection.serverValidator(mode, null)
                     .validateCertificateChain(chain, uri, new String[] {host});
+        } else if (store != null) {
+            try (StoreTrustListManager trust = new StoreTrustListManager(store, pki)) {
+                OpcConnection.serverValidator(mode, trust)
+                        .validateCertificateChain(chain, uri, new String[] {host});
+            }
         } else {
             try (FileBasedTrustListManager trust =
                     FileBasedTrustListManager.createAndInitialize(pki)) {

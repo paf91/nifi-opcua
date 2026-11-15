@@ -130,6 +130,15 @@ final class ConnectionDiagnostics {
         metadata.put("namespaceRead", "Unavailable; numeric NodeIds do not require URI resolution");
     }
 
+    synchronized void tagMetadata(int count, int missingTypes, int missingUnits, String failure) {
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("tags", count);
+        state.put("missingDataTypes", missingTypes);
+        state.put("missingEngineeringUnits", missingUnits);
+        state.put("failure", failure);
+        metadata.put("tagMetadata", state);
+    }
+
     synchronized void subscription(double requested, double revised) {
         metadata.put("requestedPublishingIntervalMs", requested);
         metadata.put("revisedPublishingIntervalMs", revised);

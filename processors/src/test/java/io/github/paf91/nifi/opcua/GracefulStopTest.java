@@ -35,8 +35,8 @@ class GracefulStopTest {
                 };
 
         Fixture() throws Exception {
-            runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "1000");
-            runner.setProperty(SubscribeOpcUa.BATCH, "2");
+            runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "1000");
+            runner.setProperty(ConsumeOPCUA.BATCH, "2");
             processor.start(runner.getProcessContext());
             trigger();
             created.set(0);
@@ -75,7 +75,7 @@ class GracefulStopTest {
         void assertValues(int count) throws Exception {
             List<Integer> values = new ArrayList<>();
             ObjectMapper json = new ObjectMapper();
-            for (MockFlowFile flow : runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)) {
+            for (MockFlowFile flow : runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)) {
                 for (com.fasterxml.jackson.databind.JsonNode item :
                         json.readTree(runner.getContentAsByteArray(flow)))
                     values.add(item.get("value").intValue());
@@ -89,7 +89,7 @@ class GracefulStopTest {
 
         @Override
         public void close() throws Exception {
-            runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "0");
+            runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "0");
             processor.stop();
             await(() -> workers() == 0);
         }
@@ -116,7 +116,7 @@ class GracefulStopTest {
                     };
             f.processor.stop();
             assertEquals(0, f.remaining());
-            f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 3);
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 3);
             f.assertValues(5);
             assertEquals(3, f.runner.getProvenanceEvents().size());
             assertTrue(f.runner.getLogger().getWarnMessages().isEmpty());
@@ -132,9 +132,9 @@ class GracefulStopTest {
         try (Fixture f = new Fixture()) {
             f.add(1);
             if (reason.equals("disabled"))
-                f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "0");
+                f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "0");
             if (reason.equals("backpressure"))
-                f.runner.setRelationshipUnavailable(SubscribeOpcUa.SUCCESS);
+                f.runner.setRelationshipUnavailable(ConsumeOPCUA.SUCCESS);
             if (reason.equals("revoked") || reason.equals("disconnected")) {
                 f.runner.setIsConfiguredForClustering(true);
                 f.runner.setClustered(true);
@@ -234,7 +234,7 @@ class GracefulStopTest {
                                             message.getMsg()
                                                     .contains(
                                                             "repository-secret-must-not-be-logged")));
-            f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
             f.decorate = UnaryOperator.identity();
             f.processor.start(f.runner.getProcessContext());
             f.trigger();
@@ -246,7 +246,7 @@ class GracefulStopTest {
     @Test
     void blockedWriteCannotHoldStopOrCreateWorkersOnRepeatedStopStart() throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "100");
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "100");
             f.add(2);
             CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
             AtomicReference<ProcessSession> stuck = new AtomicReference<>();
@@ -307,8 +307,8 @@ class GracefulStopTest {
     @ValueSource(booleans = {true, false})
     void timedOutCommitKeepsItsReservationUntilTheActualOutcome(boolean succeeds) throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "100");
-            f.runner.setProperty(SubscribeOpcUa.BATCH, "1");
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "100");
+            f.runner.setProperty(ConsumeOPCUA.BATCH, "1");
             f.add(2);
             AtomicReference<ProcessSession> pending = new AtomicReference<>();
             AtomicReference<Runnable> success = new AtomicReference<>();
@@ -333,7 +333,7 @@ class GracefulStopTest {
             assertEquals(2, f.remaining());
             assertEquals(true, f.buffer().get("reserved"));
             f.decorate = UnaryOperator.identity();
-            f.runner.setProperty(SubscribeOpcUa.ENDPOINT, "opc.tcp://changed:4840");
+            f.runner.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://changed:4840");
             f.processor.start(f.runner.getProcessContext());
             f.trigger();
             assertEquals(2, f.remaining(), "Start cannot duplicate an unresolved stop-time commit");
@@ -355,7 +355,7 @@ class GracefulStopTest {
     @Test
     void existingCommitCompletesBeforeTheStopDrainClaimsAnotherBatch() throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.BATCH, "1");
+            f.runner.setProperty(ConsumeOPCUA.BATCH, "1");
             f.add(2);
             ProcessSession pending = spy(f.runner.getProcessSessionFactory().createSession());
             AtomicReference<Runnable> committed = new AtomicReference<>();
@@ -387,7 +387,7 @@ class GracefulStopTest {
 
     @Test
     void emptyOrNeverTriggeredProcessorStopsWithoutCreatingDrainWorkers() throws Exception {
-        SubscribeOpcUa processor = new ProcessorTest.OfflineProcessor();
+        ConsumeOPCUA processor = new ProcessorTest.OfflineProcessor();
         TestRunner runner = ProcessorTest.configured(processor);
         processor.stop();
         processor.start(runner.getProcessContext());
@@ -397,18 +397,18 @@ class GracefulStopTest {
         processor.acceptForTest(MemoryBoundsTest.TAG, new DataValue(new Variant(1)));
         processor.stop();
         assertEquals(1, runner.getLogger().getWarnMessages().size());
-        runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+        runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
     }
 
     @Test
     void drainTimeoutIsValidated() {
         TestRunner runner = ProcessorTest.configured(new ProcessorTest.OfflineProcessor());
         for (String value : Arrays.asList("-1", "30001", "invalid")) {
-            runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, value);
+            runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, value);
             runner.assertNotValid();
         }
         for (String value : Arrays.asList("0", "100", "30000")) {
-            runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, value);
+            runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, value);
             runner.assertValid();
         }
     }
@@ -424,7 +424,7 @@ class GracefulStopTest {
                                         call -> {
                                             Object result = call.callRealMethod();
                                             f.runner.setRelationshipUnavailable(
-                                                    SubscribeOpcUa.SUCCESS);
+                                                    ConsumeOPCUA.SUCCESS);
                                             return result;
                                         })
                                 .when(session)
@@ -434,7 +434,7 @@ class GracefulStopTest {
             f.processor.stop();
             assertEquals(3, f.remaining());
             assertEquals(1, f.created.get());
-            f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
             assertEquals(1, f.runner.getLogger().getWarnMessages().size());
         }
     }
@@ -443,9 +443,9 @@ class GracefulStopTest {
     void stopDrainHonorsTheFlowFileByteLimit() throws Exception {
         try (Fixture f = new Fixture()) {
             f.processor.stop();
-            f.runner.setProperty(SubscribeOpcUa.RECORD_BYTES, "1024");
-            f.runner.setProperty(SubscribeOpcUa.BATCH_BYTES, "1026");
-            f.runner.setProperty(SubscribeOpcUa.BATCH, "100");
+            f.runner.setProperty(ConsumeOPCUA.RECORD_BYTES, "1024");
+            f.runner.setProperty(ConsumeOPCUA.BATCH_BYTES, "1026");
+            f.runner.setProperty(ConsumeOPCUA.BATCH, "100");
             f.processor.start(f.runner.getProcessContext());
             f.trigger();
             for (int i = 0; i < 3; i++)
@@ -453,8 +453,8 @@ class GracefulStopTest {
                         MemoryBoundsTest.TAG,
                         new DataValue(new Variant(String.join("", Collections.nCopies(600, "a")))));
             f.processor.stop();
-            f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 3);
-            for (MockFlowFile flow : f.runner.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)) {
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 3);
+            for (MockFlowFile flow : f.runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)) {
                 assertTrue(f.runner.getContentAsByteArray(flow).length <= 1026);
                 flow.assertAttributeEquals("record.count", "1");
             }
@@ -487,14 +487,14 @@ class GracefulStopTest {
             f.processor.stop();
             assertEquals(1, f.remaining());
             assertEquals(false, f.buffer().get("reserved"));
-            f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
         }
     }
 
     @Test
     void blockedRollbackCannotHoldStopOrReleaseItsReservationEarly() throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "100");
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "100");
             f.add(1);
             CountDownLatch rollback = new CountDownLatch(1), release = new CountDownLatch(1);
             f.decorate =
@@ -544,7 +544,7 @@ class GracefulStopTest {
     @Test
     void interruptionEndsStopWaitAndPreservesTheInterruptFlag() throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "5000");
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "5000");
             f.add(1);
             CountDownLatch commit = new CountDownLatch(1);
             AtomicReference<ProcessSession> pending = new AtomicReference<>();
@@ -592,7 +592,7 @@ class GracefulStopTest {
     @Test
     void aBlockedCommitCallCanFinishLaterWithoutDuplicatingTheBatch() throws Exception {
         try (Fixture f = new Fixture()) {
-            f.runner.setProperty(SubscribeOpcUa.STOP_DRAIN_TIMEOUT, "100");
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "100");
             f.add(1);
             CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
             f.decorate =
@@ -629,7 +629,7 @@ class GracefulStopTest {
                 assertEquals(0, f.remaining());
                 f.assertValues(1);
                 f.trigger();
-                f.runner.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
+                f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
             } finally {
                 release.countDown();
                 caller.shutdownNow();

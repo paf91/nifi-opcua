@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "dist" / "nifi-opcua-subscriber-source.tar.gz")
+    parser.add_argument("--output", type=Path, default=ROOT / "dist" / "nifi-opcua-source.tar.gz")
     args = parser.parse_args()
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip():
         raise SystemExit("Commit or otherwise resolve working-tree changes before exporting.")
@@ -25,10 +25,10 @@ def main():
     if errors:
         raise SystemExit("\n".join(errors))
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    data = subprocess.check_output(["git", "archive", "--format=tar.gz", "--prefix=nifi-opcua-subscriber/", commit], cwd=ROOT)
+    data = subprocess.check_output(["git", "archive", "--format=tar.gz", "--prefix=nifi-opcua/", commit], cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         for member in archive.getmembers():
-            name = member.name.removeprefix("nifi-opcua-subscriber/") if hasattr(str, "removeprefix") else member.name[len("nifi-opcua-subscriber/"):]
+            name = member.name.removeprefix("nifi-opcua/") if hasattr(str, "removeprefix") else member.name[len("nifi-opcua/"):]
             if member.issym() or member.islnk() or (member.isfile() and check.forbidden(name)):
                 raise SystemExit("Forbidden export entry: " + name)
     args.output.parent.mkdir(parents=True, exist_ok=True)

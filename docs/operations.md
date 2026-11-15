@@ -2,13 +2,24 @@
 
 ## Startup and shutdown
 
-Scheduling prepares state without opening a session. A connected primary node opens the subscription from its trigger. Therefore a full outbound queue can delay initial connection and recovery. Observe successful data and bulletins, not only the NiFi RUNNING indicator.
+Scheduling prepares state without opening a session. A trigger opens the subscription. In a cluster, this requires the node to be connected and primary. A full outbound queue can delay initial connection and recovery. Observe successful data and bulletins, not only the NiFi RUNNING indicator.
 
-Stop cancels startup, fences old callbacks, and closes owned transports and trust-store watchers. After active triggers finish, it attempts to commit already buffered records for up to **Stop Drain Timeout (ms)**, default **5000**. Set zero to stop without that attempt. Draining respects batch count/byte limits, downstream backpressure and current primary ownership. It stops at the first failure, interruption or deadline; it does not retry a failing repository indefinitely. A clean drain produces no pending-data warning. Otherwise the warning gives the count and reason, and Start drains the retained records before opening a new subscription.
+Stop cancels startup and closes owned transports and PKI-directory watchers. Late callbacks from the old connection add no records. After active triggers finish, it attempts to commit already buffered records for up to **Stop Drain Timeout (ms)**, default **5000**. Set zero to stop without that attempt. Draining respects batch count/byte limits, downstream backpressure and current primary ownership. It stops at the first failure, interruption or deadline; it does not retry a failing repository indefinitely. A clean drain produces no pending-data warning. Otherwise the warning gives the count and reason, and Start drains the retained records before opening a new subscription.
 
-During initial setup, Request Timeout bounds each OPC operation, including session acquisition for NiFi 2 operation-limit reads and monitored-item creation. Each service call gets a fresh deadline; the setting is not a deadline for the entire startup of a large tag list. Milo manages established-session recovery separately. NiFi/JVM restart loses the memory queue.
+During initial setup, Request Timeout bounds OPC operations, including session acquisition for NiFi 2 operation-limit reads and monitored-item creation. Optional tag metadata requests share one timeout budget. Other setup operations receive individual deadlines, so the setting is not a deadline for the entire startup of a large tag list. Milo manages established-session recovery separately. NiFi/JVM restart loses the memory queue.
 
 A server restart may preserve/transfer a session or require a new subscription. Failed transfer, bad status and watchdog events request recovery. The server can repeat current values when a subscription is recreated.
+
+## Certificate and truststore rotation
+
+Client identity and JKS/PKCS12 truststore files load when the processor creates a new connection. An ordinary Milo reconnect can reuse the existing connection and does not guarantee a reload. Use this procedure for predictable rotation:
+
+1. Stop the source and confirm NiFi has finished stopping it. Confirm that the memory buffer drained, or retain the remaining records under the existing in-memory delivery contract.
+2. Stage the new identity/trust files on every eligible cluster node, preserve service-account access and atomically replace the configured files. Configure any changed store password, private-key password or alias in NiFi.
+3. Run Verify against the new configuration. It opens a temporary session and subscription, so allow for an additional server session. Confirm that the server administrator trusts the new client certificate and that NiFi trusts the new server identity.
+4. Start and confirm fresh delivery. Retained records drain with their original metadata before a new subscription opens.
+
+The processor reads store files without changing them. In JKS/PKCS12 server-trust mode, PKI Directory supplies issuer certificates and CRLs only; its `trusted/certs/` files are ignored. Follow the target-specific issuer paths in the [configuration reference](configuration.md#server-trust-sources). A missing required CRL still causes validation failure. Keep store and key passwords separate when their protection differs, and use sensitive parameters for both.
 
 ## Monitoring
 
@@ -40,7 +51,7 @@ Before enabling production failover:
 1. Install identical NARs and appropriate certificate/trust material on both nodes.
 2. Confirm only the connected primary has an active subscription.
 3. Revoke the primary role during normal operation and during connection setup.
-4. Confirm the old connection closes, no late callbacks enter a new generation, and the new primary produces fresh values.
+4. Confirm the old connection closes, late callbacks from it add no records, and the new primary produces fresh values.
 5. Repeat with downstream backpressure, server outage and pending commits.
 6. Confirm the destination's policy for old-node buffered records, duplicate initial values and missing intervals.
 

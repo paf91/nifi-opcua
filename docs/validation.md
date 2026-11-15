@@ -1,5 +1,54 @@
 # Validation record
 
+Each section records the checks and limitations reported at that time. Evidence applies only to the source snapshots and artifact hashes identified for those results.
+
+## 1.0.5-SNAPSHOT local reliability and store validation - 2026-11-15
+
+This is an unpublished development candidate. Full clean Maven reactors completed from source snapshot `38bf547a864d740ea22f6a5dc2835840995cd7ddb6b1ed97d369433ce15afa8b`, including NAR documentation and packaging. Subsequent updates to this validation record and IDE ignore entries do not change the packaged processor inputs.
+
+| NiFi target / build JDK | Selected | Executed | Skipped | Failures / errors |
+|---|---:|---:|---:|---:|
+| NiFi 1.23.2 / Java 8 | 603 | 602 | 1 | 0 / 0 |
+| NiFi 2.12.0 / Java 21 | 615 | 614 | 1 | 0 / 0 |
+| NiFi 2.12.0 / Java 25 | 615 | 614 | 1 | 0 / 0 |
+
+The build JVMs were Temurin `1.8.0_472-b08`, `21.0.9+10-LTS` and `25.0.1+8-LTS`, respectively.
+
+Each lane skipped only the opt-in `ExternalServerTest`, because no external endpoint was configured. All required open62541 cases ran without skips: 36 on the legacy profile and 38 on each modern build. Both modern builds target Java 21 bytecode. The Java 25 run provides additional build/test verification, not another deployed NiFi runtime target.
+
+Repository Python tests: 120 passed. The pinned Java formatter checked all 78 Java source files successfully on JDK 21. The demo completed a clean package build on Java 8; it contains no tests. All three NARs passed registration, documentation, provided/test-dependency exclusion and base-bytecode verification, dependency inventory generation and checks for the ten declared FlowFile attributes.
+
+Regression coverage includes synchronous reservation rollback, asynchronous commit ownership and callback wake-ups, readiness against a reference model, concurrent buffer admission, distinct per-tag metadata, and metadata refresh with numeric namespace indexes after session replacement. Store tests cover JKS/PKCS12 passwords and aliases, no-MAC PKCS12 fixtures, independent key passwords, PEM/DER compatibility, trusted-entry extraction, PKI/CRL boundaries, redaction, password-array cleanup and live subscriptions on both Milo adapters. PKI tests cover ordinary file-in-place-of-directory mistakes and guarded modern initialization. Acceptance-harness regressions cover content associations, cleanup observations and source provenance.
+
+Controlled readiness and ordinary-value resource checks do not establish end-to-end throughput, multi-day leak freedom or a bound on whole-process memory. The dated results below remain tied to their recorded inputs and artifacts.
+
+| Build | NAR | SHA-256 |
+|---|---|---|
+| Java 8 | `nifi-opcua-1.23.2-1.0.5-SNAPSHOT.nar` | `37c5e30eda6c3556d8293bd47f8990db387ad9e4d4f46448cc542bf73b6db364` |
+| Java 21 | `nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar` | `0381307cb0c2d7b6b1b87f6dc1d5b2bdc98bf2b44187939f500377bc8569e96c` |
+| Java 25 verification | `nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar` | `d70a879bfc1c312f4c45ea464e2c39056a33e0b0a42b21dbd22d524d960d0bbe` |
+
+Local source manifests, commands, logs, JUnit reports, inventories and artifact checks are retained under ignored `dist/reliability-fixes/stores-final/`; formatter and advisory-attempt records are under `dist/stores-review/`. These records do not establish remote CI success.
+
+Full NiFi runtime acceptance for the artifacts above was blocked at the time by Docker and loopback-socket permissions. Production-server acceptance and multi-day resource testing remained outstanding. The OSV advisory lookup also failed because DNS resolution was unavailable, so these checks provide no advisory clearance. Repeat the lookup and run acceptance against the exact NAR hashes before stable publication.
+
+## 1.0.5-SNAPSHOT local validation — 2026-10-29
+
+This is an unpublished development build. Both full Maven reactors completed, including NAR documentation and packaging:
+
+| Profile | Java test cases | Passed | Skipped | Failures/errors |
+|---|---:|---:|---:|---:|
+| NiFi 1.23.2 / Java 8 | 464 | 463 | 1 | 0 |
+| NiFi 2.12.0 / Java 21 | 468 | 467 | 1 | 0 |
+
+The only skipped case in each profile is the opt-in ExternalServerTest, because no external endpoint was configured. Each profile passed all 35 required open62541 interoperability/recovery cases, including new engineering-unit and data-type retrieval over None/None and Basic256Sha256/SignAndEncrypt. Repository Python tests: 29 passed. Both NARs passed registration, documentation, dependency-exclusion and base-bytecode verification.
+
+New Java coverage includes projection validation, default-schema compatibility, timestamp precision around 1970, primitive arrays, exact byte limits, NDJSON escaping/framing, quality routing, pending/failed commits, bounded waits, batch age/size/pressure flushing, retained settings across Stop/Start, quality-route backpressure, metadata batching/limits/missing properties/cancellation/timeouts, rejection of oversized or unrelated metadata extension bodies and allocation checks.
+
+Disposable standalone NiFi 1.23.2 (Java 1.8.0_472) and NiFi 2.12.0 (Java 21.0.12.1) runtimes both passed default secure delivery, opt-in NDJSON projection, epoch timestamps, server timestamp/data-type metadata, additional relationship configuration and restoration of default output. Each used 25 synthetic tags. No SubscribeOpcUa warning/error appeared in the captured application logs. The demo lacks engineering units, so the runtime checks verified null fallback; the independent C server tests verified actual EUInformation decoding. These runtime checks are not a repeat of cluster failover or a long-duration memory soak.
+
+Warmed allocation checks measured approximately 50 KB (Java 8) and 106 KB (Java 21) per 1024-element primitive double-array record. For the scalar projection case, allocation was approximately 2642 → 1528 bytes on Java 8 and 2477 → 1400 bytes on Java 21. These include temporary garbage and use synthetic values; they are not end-to-end throughput or heap-sizing guarantees. Evidence, NAR hashes and test logs are retained locally under ignored `dist/efficient-etl/`.
+
 ## Version 1.0.4 — Stop draining and callback cost
 
 The stop review confirmed that 1.0.3 retained the last buffered notification without attempting a final drain. The new stop path is tested for successful multi-batch draining, original source metadata and FlowFile byte limits; synchronous and asynchronous repository failures; unresolved and late commits; blocked writes, rollback and commit calls; interruption; downstream backpressure; loss of primary ownership; and repeated Stop/Start with one blocked worker. These tests use controlled NiFi mock sessions to exercise failures that are difficult to reproduce safely in a running repository. Full-runtime evidence is recorded separately by NAR hash.

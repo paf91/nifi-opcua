@@ -18,6 +18,10 @@ final class OpcSettings {
     private final List<TagDefinition> tags;
     private final OpcSecurity security;
     private final ServerCertificateValidation serverCertificateValidation;
+    private final OutputSettings output;
+    private final KeyStoreSettings clientKeyStore;
+    private final String clientKeyAlias;
+    private final KeyStoreSettings serverTrustStore;
 
     OpcSettings(
             String endpoint,
@@ -89,6 +93,44 @@ final class OpcSettings {
             List<TagDefinition> tags,
             OpcSecurity security,
             ServerCertificateValidation serverCertificateValidation) {
+        this(
+                endpoint,
+                applicationUri,
+                certificate,
+                privateKey,
+                privateKeyPassword,
+                pki,
+                username,
+                password,
+                publishingInterval,
+                requestTimeout,
+                tags,
+                security,
+                serverCertificateValidation,
+                OutputSettings.DEFAULT,
+                null,
+                null,
+                null);
+    }
+
+    private OpcSettings(
+            String endpoint,
+            String applicationUri,
+            Path certificate,
+            Path privateKey,
+            String privateKeyPassword,
+            Path pki,
+            String username,
+            String password,
+            int publishingInterval,
+            int requestTimeout,
+            List<TagDefinition> tags,
+            OpcSecurity security,
+            ServerCertificateValidation serverCertificateValidation,
+            OutputSettings output,
+            KeyStoreSettings clientKeyStore,
+            String clientKeyAlias,
+            KeyStoreSettings serverTrustStore) {
         this.endpoint = endpoint;
         this.applicationUri = applicationUri;
         this.certificate = certificate;
@@ -103,6 +145,71 @@ final class OpcSettings {
         this.security = security;
         this.serverCertificateValidation =
                 java.util.Objects.requireNonNull(serverCertificateValidation);
+        this.output = output;
+        this.clientKeyStore = clientKeyStore;
+        this.clientKeyAlias = clientKeyAlias;
+        this.serverTrustStore = serverTrustStore;
+    }
+
+    OpcSettings withOutput(OutputSettings output) {
+        return new OpcSettings(
+                endpoint,
+                applicationUri,
+                certificate,
+                privateKey,
+                privateKeyPassword,
+                pki,
+                username,
+                password,
+                publishingInterval,
+                requestTimeout,
+                tags,
+                security,
+                serverCertificateValidation,
+                java.util.Objects.requireNonNull(output),
+                clientKeyStore,
+                clientKeyAlias,
+                serverTrustStore);
+    }
+
+    OpcSettings withKeyStores(
+            KeyStoreSettings clientKeyStore,
+            String clientKeyAlias,
+            KeyStoreSettings serverTrustStore) {
+        return new OpcSettings(
+                endpoint,
+                applicationUri,
+                certificate,
+                privateKey,
+                privateKeyPassword,
+                pki,
+                username,
+                password,
+                publishingInterval,
+                requestTimeout,
+                tags,
+                security,
+                serverCertificateValidation,
+                output,
+                clientKeyStore,
+                clientKeyAlias,
+                serverTrustStore);
+    }
+
+    KeyStoreSettings clientKeyStore() {
+        return clientKeyStore;
+    }
+
+    String clientKeyAlias() {
+        return clientKeyAlias;
+    }
+
+    KeyStoreSettings serverTrustStore() {
+        return serverTrustStore;
+    }
+
+    OutputSettings output() {
+        return output;
     }
 
     String endpoint() {

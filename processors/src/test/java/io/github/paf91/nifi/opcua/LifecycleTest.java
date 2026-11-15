@@ -21,7 +21,7 @@ class LifecycleTest {
         ((MockProcessContext) runner.getProcessContext()).setPrimaryNode(primary);
     }
 
-    static class Tracking extends SubscribeOpcUa {
+    static class Tracking extends ConsumeOPCUA {
         int opened, closed;
         ConnectionAttempt generation;
 
@@ -78,7 +78,7 @@ class LifecycleTest {
         first.primaryChanged(PrimaryNodeState.ELECTED_PRIMARY_NODE);
         first.onTrigger(a.getProcessContext(), a.getProcessSessionFactory().createSession());
         assertEquals(2, first.opened);
-        a.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+        a.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
         first.stop();
         second.stop();
     }
@@ -112,7 +112,7 @@ class LifecycleTest {
             assertEquals(1, p.closed);
             p.value(reelected, 42);
             r.run(1, false, false);
-            r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
+            r.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
             assertEquals(2, p.opened, "A stale event must not force a new subscription");
 
             p.stop();
@@ -148,7 +148,7 @@ class LifecycleTest {
                 p.value(old, 999);
                 p.onTrigger(r.getProcessContext(), r.getProcessSessionFactory().createSession());
                 assertEquals(1, p.opened);
-                r.assertTransferCount(SubscribeOpcUa.SUCCESS, 0);
+                r.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
             } finally {
                 p.stop();
             }
@@ -165,7 +165,7 @@ class LifecycleTest {
         p.stop();
         p.start(r.getProcessContext());
         r.run(1, false, false);
-        r.assertTransferCount(SubscribeOpcUa.SUCCESS, 1);
+        r.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
         assertEquals(1, p.opened, "Drain must not require a new connection");
         r.run(1, true, false);
         assertEquals(2, p.opened);
@@ -180,31 +180,31 @@ class LifecycleTest {
                 TagDefinition.parse("tag", ProcessorTest.NODE, 100, 10),
                 new DataValue(new Variant(1)));
         p.stop();
-        r.setProperty(SubscribeOpcUa.ENDPOINT, "opc.tcp://different:4840");
-        r.setProperty(SubscribeOpcUa.SECURITY_POLICY, "None");
-        r.setProperty(SubscribeOpcUa.SECURITY_MODE, "None");
+        r.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://different:4840");
+        r.setProperty(ConsumeOPCUA.SECURITY_POLICY, "None");
+        r.setProperty(ConsumeOPCUA.SECURITY_MODE, "None");
         p.start(r.getProcessContext());
         r.run(1, false, false);
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(0)
                 .assertAttributeEquals("opcua.endpoint", "opc.tcp://localhost:4840");
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(0)
                 .assertAttributeEquals("opcua.security.policy", "Basic256Sha256");
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(0)
                 .assertAttributeEquals("opcua.security.mode", "SignAndEncrypt");
         assertEquals(0, p.opened);
         r.run(1, false, false);
         p.value(p.generation, 2);
         r.run(1, true, false);
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(1)
                 .assertAttributeEquals("opcua.endpoint", "opc.tcp://different:4840");
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(1)
                 .assertAttributeEquals("opcua.security.policy", "None");
-        r.getFlowFilesForRelationship(SubscribeOpcUa.SUCCESS)
+        r.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
                 .get(1)
                 .assertAttributeEquals("opcua.security.mode", "None");
     }
@@ -241,8 +241,8 @@ class LifecycleTest {
     void stopAndRevocationCancelAnOpeningConnection() throws Exception {
         for (boolean revoke : Arrays.asList(false, true)) {
             CountDownLatch entered = new CountDownLatch(1);
-            SubscribeOpcUa p =
-                    new SubscribeOpcUa() {
+            ConsumeOPCUA p =
+                    new ConsumeOPCUA() {
                         @Override
                         protected AutoCloseable openConnection(
                                 ProcessContext context, ConnectionAttempt attempt)

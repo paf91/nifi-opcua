@@ -32,8 +32,8 @@ class ReleasePackagingTest(unittest.TestCase):
                              digest.read_text())
             with tarfile.open(archive) as tar:
                 names = tar.getnames()
-                self.assertNotIn('nifi-opcua-subscriber-release/INCOMPLETE', names)
-                sums = tar.extractfile('nifi-opcua-subscriber-release/SHA256SUMS').read().decode()
+                self.assertNotIn('nifi-opcua-release/INCOMPLETE', names)
+                sums = tar.extractfile('nifi-opcua-release/SHA256SUMS').read().decode()
                 self.assertNotIn('INCOMPLETE', sums)
                 self.assertIn('  source.txt\n', sums)
                 self.assertEqual(hashlib.sha256((output / 'source.txt').read_bytes()).hexdigest(),
