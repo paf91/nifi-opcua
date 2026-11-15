@@ -587,6 +587,89 @@ class MavenCiConfigurationTest(unittest.TestCase):
         self.assertIn("nifi2-java21", gitlab["nifi2-java25"])
 
 
+class FormatterCiConfigurationTest(unittest.TestCase):
+    CACHE_PATH = '.tools/google-java-format-*.jar'
+
+    @staticmethod
+    def sections(source, indentation):
+        matches = list(re.finditer(r'^' + ' ' * indentation + r'([.\w-]+):([^\n]*)$',
+                                   source, re.MULTILINE))
+        return {match.group(1): (match.group(2).strip(), source[match.end():
+                    matches[index + 1].start() if index + 1 < len(matches) else len(source)])
+                for index, match in enumerate(matches)}
+
+    @staticmethod
+    def scalar(value):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            return value[1:-1]
+        return value
+
+    def sequence(self, section, indentation):
+        value, body = section
+        if value:
+            self.assertTrue(value.startswith('[') and value.endswith(']'), value)
+            return [self.scalar(item.strip()) for item in value[1:-1].split(',') if item.strip()]
+        return [self.scalar(item) for item in re.findall(
+            r'^' + ' ' * indentation + r'-\s+([^\n]+?)\s*$', body, re.MULTILINE)]
+
+    def test_github_formatter_cache_uses_the_script_hash_and_narrow_path(self):
+        source = (ROOT / '.github/workflows/ci.yml').read_text()
+        top = self.sections(source, 0)
+        permissions = self.sections(top['permissions'][1], 2)
+        self.assertEqual({'contents'}, set(permissions))
+        self.assertEqual('read', permissions['contents'][0])
+        jobs = self.sections(top['jobs'][1], 2)
+        steps = re.split(r'^      - ', jobs['repository'][1], flags=re.MULTILINE)[1:]
+        caches = [step for step in steps if re.search(
+            r'^(?:uses:|        uses:) actions/cache(?:/|@)', step, re.MULTILINE)]
+        self.assertEqual(1, len(caches))
+        cache = caches[0]
+        action = re.search(r'^(?:uses:|        uses:) (\S+)', cache, re.MULTILINE).group(1)
+        self.assertEqual('actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830', action)
+        options = self.sections(self.sections(cache, 8)['with'][1], 10)
+        self.assertEqual({'path', 'key'}, set(options))
+        self.assertEqual(self.CACHE_PATH, self.scalar(options['path'][0]))
+        self.assertEqual("${{ runner.os }}-google-java-format-${{ hashFiles('scripts/format-java.py') }}",
+                         self.scalar(options['key'][0]))
+        checks = [step for step in steps if re.search(
+            r'^(?:run:|        run:) python3 scripts/format-java.py --check\s*$',
+            step, re.MULTILINE)]
+        self.assertEqual(1, len(checks))
+        self.assertNotIn('if', self.sections(checks[0], 8))
+        self.assertFalse(checks[0].startswith('if:'))
+        self.assertLess(steps.index(cache), steps.index(checks[0]))
+        self.assertNotRegex(jobs['build'][1], r'\bactions/cache(?:/|@)')
+
+    def test_gitlab_formatter_cache_is_saved_only_on_success_without_fallbacks(self):
+        source = (ROOT / '.gitlab-ci.yml').read_text()
+        jobs = self.sections(source, 0)
+        repository = self.sections(jobs['repository'][1], 2)
+        cache = self.sections(repository['cache'][1], 4)
+        self.assertEqual({'key', 'paths', 'when'}, set(cache))
+        self.assertEqual('on_success', cache['when'][0])
+        self.assertEqual([self.CACHE_PATH], self.sequence(cache['paths'], 6))
+        key = self.sections(cache['key'][1], 6)
+        self.assertEqual({'files', 'prefix'}, set(key))
+        self.assertEqual(['scripts/format-java.py'], self.sequence(key['files'], 8))
+        self.assertEqual('google-java-format', self.scalar(key['prefix'][0]))
+        commands = self.sequence(repository['script'], 4)
+        self.assertEqual(1, commands.count('python3 scripts/format-java.py --check'))
+        self.assertNotIn('rules', repository)
+        self.assertNotIn('extends', repository)
+
+    def test_gitlab_maven_and_fixture_caches_keep_their_existing_scope(self):
+        jobs = self.sections((ROOT / '.gitlab-ci.yml').read_text(), 0)
+        shared = self.sections(jobs['cache'][1], 2)
+        self.assertEqual({'key', 'paths'}, set(shared))
+        self.assertEqual('maven-$CI_JOB_NAME', self.scalar(shared['key'][0]))
+        self.assertEqual(['.m2/repository/'], self.sequence(shared['paths'], 4))
+        fixture = self.sections(jobs['open62541'][1], 2)
+        self.assertEqual([], self.sequence(fixture['cache'], 4))
+        for name in ('.build', 'nifi1-java8', 'nifi2-java21', 'nifi2-java25'):
+            with self.subTest(job=name):
+                self.assertNotIn('cache', self.sections(jobs[name][1], 2))
+
+
 class InteropCoverageTest(unittest.TestCase):
     SHARED = ('Open62541Test', 'Open62541RecoveryTest')
     MODERN = ('Open62541Test', 'Open62541RecoveryTest', 'Open62541SetupTest')

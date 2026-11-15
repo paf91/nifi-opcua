@@ -97,6 +97,14 @@ def run(args, cwd, log=None):
                    stdout=log, stderr=subprocess.STDOUT if log else None)
 
 
+def check_formatting(source, docker, log):
+    formatter = subprocess.check_output(['python3', 'scripts/format-java.py', '--download-only'],
+                                        cwd=source, text=True).strip()
+    java_files = [str(p.relative_to(source)) for folder in ['processors/src', 'demo/src']
+                  for p in (source / folder).rglob('*.java')]
+    docker('21', ['java', '-jar', formatter, '--aosp', '--dry-run', '--set-exit-if-changed', *java_files], log)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True, help='New directory under dist/; existing output is never overwritten')
@@ -171,14 +179,8 @@ def main():
             docker('8', ['mvn', '-s', 'scripts/maven-ci-settings.xml', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
                          '-DargLine=-Xms128m -Xmx1024m',
                          '-f', 'demo/pom.xml', 'clean', 'package'], log)
-        # Verify the same exported Java sources with the pinned formatter.
-        run(['python3', '-c', "import urllib.request; urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/com/google/googlejavaformat/google-java-format/1.24.0/google-java-format-1.24.0-all-deps.jar', '.formatter.jar')"], source)
-        formatter = source / '.formatter.jar'
-        if checksum(formatter) != '812f805f58112460edf01bf202a8e61d0fd1f35c0d4fabd54220640776ec57a1':
-            raise RuntimeError('Formatter checksum mismatch')
-        java_files = [str(p.relative_to(source)) for folder in ['processors/src', 'demo/src'] for p in (source / folder).rglob('*.java')]
         with (output / 'format.log').open('w') as log:
-            docker('21', ['java', '-jar', '.formatter.jar', '--aosp', '--dry-run', '--set-exit-if-changed', *java_files], log)
+            check_formatting(source, docker, log)
     run(['python3', ROOT / 'scripts/check-advisories.py',
          output / 'nifi1/dependency-inventory.json', output / 'nifi2/dependency-inventory.json',
          '--output', output / 'advisory-report.json'], ROOT)

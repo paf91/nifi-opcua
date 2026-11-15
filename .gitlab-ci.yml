@@ -9,7 +9,12 @@ repository:
   timeout: 60m
   needs: []
   image: maven:3.9.11-eclipse-temurin-21
-  cache: []
+  cache:
+    key:
+      files: [scripts/format-java.py]
+      prefix: google-java-format
+    paths: [.tools/google-java-format-*.jar]
+    when: on_success
   script:
     - apt-get update
     - apt-get install -y --no-install-recommends python3 git
