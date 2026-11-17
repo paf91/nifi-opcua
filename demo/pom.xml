@@ -7,7 +7,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>8</maven.compiler.release>
     <netty.version>4.1.139.Final</netty.version>
-    <bouncycastle.version>1.86</bouncycastle.version>
+    <bouncycastle.version>1.87</bouncycastle.version>
   </properties>
   <dependencies>
     <dependency>
