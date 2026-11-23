@@ -345,7 +345,8 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
                     "Server trust folder on each NiFi host (absolute path). With Server Trust"
                         + " Source PKI Directory, trusted/certs supplies trusted certificates. With"
                         + " a JKS or PKCS12 truststore, this optional directory supplies only"
-                        + " issuer certificates and CRLs; trusted/certs is ignored. Required when"
+                        + " issuer certificates and CRLs. Milo loads only the first certificate"
+                        + " from each directory file. Use one certificate per file. Required when"
                         + " the selected endpoint needs certificate validation and Server Trust"
                         + " Source is PKI Directory. Unused when validation is None. No"
                         + " certificates are automatically trusted.",
@@ -358,7 +359,7 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
                             "Paste one complete NodeId per line, or alias | NodeId. Example:"
                                 + " Temperature | ns=2;s=Example.Tank.Temperature. Blank lines and"
                                 + " lines starting with # are ignored. Alternatively paste a JSON"
-                                + " array of objects with nodeId, optional alias,"
+                                + " array of NodeId strings or objects with nodeId, optional alias,"
                                 + " samplingIntervalMs, queueSize, discardOldest, deadbandType and"
                                 + " deadbandValue. NodeIds support numeric ns= indexes and nsu="
                                 + " namespace URIs. Entries use processor defaults unless"
@@ -920,7 +921,7 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
     protected AutoCloseable openConnection(ProcessContext context, ConnectionAttempt generation)
             throws Exception {
         OpcSettings settings = settings(context);
-        NotificationBuffer destination = buffer;
+        NotificationBuffer destination = generation.destination;
         return new OpcConnection(
                 settings,
                 (tag, value) -> accept(destination, tag, value, generation),
@@ -1015,7 +1016,9 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
             ProcessContext context,
             org.apache.nifi.logging.ComponentLog logger,
             Map<String, String> attributes) {
-        ConnectionDiagnostics report = new ConnectionDiagnostics(value -> redact(context, value));
+        ConnectionDiagnostics report =
+                new ConnectionDiagnostics(value -> redact(context, value), true);
+        report.trustSource(context.getProperty(SERVER_TRUST_SOURCE).getValue());
         ConnectionAttempt generation = new ConnectionAttempt();
         ConfigVerificationResult.Builder result =
                 new ConfigVerificationResult.Builder()
@@ -1025,13 +1028,17 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
                     .explanation(
                             "Opened session, resolved tags and created monitored items. Temporary"
                                     + " subscription is closed after verification. "
-                                    + redact(context, report.snapshot().toString()));
+                                    + redact(
+                                            context,
+                                            report.trustExplanation(null) + report.snapshot()));
         } catch (Exception e) {
             result.outcome(ConfigVerificationResult.Outcome.FAILED)
                     .explanation(
                             failureDescription(context, e)
                                     + "; "
-                                    + redact(context, report.snapshot().toString()));
+                                    + redact(
+                                            context,
+                                            report.trustExplanation(e) + report.snapshot()));
         } finally {
             generation.cancel();
         }
@@ -1235,18 +1242,18 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
                 context.yield();
                 return;
             }
+            // Stop the failed generation before draining, so it cannot keep filling the buffer.
+            if (recovery.get() && connection != null) closeConnection();
             if (replaceBufferWhenDrained && buffer.size() == 0) {
                 initializeBuffer(context);
             }
-            // Stop the failed generation before draining, so it cannot keep filling the buffer.
-            if (recovery.get() && connection != null) closeConnection();
-            // Drain retained data even if the OPC server is unavailable.
-            if (buffer.size() == 0
-                    && (connection == null || recovery.get())
+            // The last retained commit can finish after the check above. Wait for replacement.
+            if (connection == null
+                    && !replaceBufferWhenDrained
+                    && buffer.size() == 0
                     && (nextRetry == 0 || System.nanoTime() - nextRetry >= 0)) {
-                closeConnection();
                 recovery.set(false);
-                ConnectionAttempt generation = new ConnectionAttempt();
+                ConnectionAttempt generation = new ConnectionAttempt(buffer.emptyCopy());
                 synchronized (connectionLock) {
                     attempt = generation;
                     if (!running || !ownsSubscription()) generation.cancel();
@@ -1258,9 +1265,9 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
                     generation.check();
                     publishConnection(openConnection(context, generation), generation);
                     successfulConnections.incrementAndGet();
-                } catch (Exception e) {
-                    generation.cancel();
+                } catch (Exception | Error e) {
                     closeConnection();
+                    if (e instanceof Error) throw (Error) e;
                     if (running && ownsSubscription()) {
                         recovery.set(true);
                         lastFailure = failureDescription(context, e);
@@ -1514,7 +1521,10 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
 
     private void closeConnection() {
         synchronized (connectionLock) {
-            if (attempt != null) attempt.cancel();
+            if (attempt != null) {
+                attempt.cancel();
+                attempt = null;
+            }
             AutoCloseable owned = connection;
             connection = null;
             closeResource(owned);
@@ -1522,16 +1532,24 @@ public class ConsumeOPCUA extends AbstractSessionFactoryProcessor implements Ver
     }
 
     private void publishConnection(AutoCloseable opened, ConnectionAttempt generation) {
-        synchronized (connectionLock) {
-            if (attempt != generation
-                    || generation.isCancelled()
-                    || !running
-                    || !ownsSubscription()) {
-                generation.cancel();
-                closeResource(opened);
-                throw new CancellationException("OPC UA connection cancelled before publication");
+        try {
+            synchronized (connectionLock) {
+                generation.publish(
+                        () -> {
+                            if (attempt != generation
+                                    || !running
+                                    || !ownsSubscription()
+                                    || recovery.get())
+                                throw new CancellationException(
+                                        "OPC UA connection cancelled before publication");
+                            buffer = generation.destination;
+                            connection = opened;
+                        });
             }
-            connection = opened;
+        } catch (RuntimeException | Error e) {
+            generation.cancel();
+            closeResource(opened);
+            throw e;
         }
     }
 

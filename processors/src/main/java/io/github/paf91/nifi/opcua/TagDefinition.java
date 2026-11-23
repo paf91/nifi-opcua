@@ -144,9 +144,7 @@ final class TagDefinition {
                             "deadbandValue"));
 
     static TagDefinition parse(String alias, String text, double sampling, int queue) {
-        if (alias == null || alias.trim().isEmpty() || text == null || text.trim().isEmpty())
-            throw new IllegalArgumentException("A tag requires a nonempty alias and NodeId");
-        String id = text.trim();
+        String id = text == null ? "" : text.trim();
         boolean discard = true;
         int deadbandType = 0;
         double deadbandValue = 0;
@@ -200,6 +198,29 @@ final class TagDefinition {
                 throw new IllegalArgumentException("Invalid tag JSON");
             }
         }
+        return fromNodeId(alias, id, sampling, queue, discard, deadbandType, deadbandValue);
+    }
+
+    static TagDefinition parseJsonString(String text, double sampling, int queue) {
+        int start = 0;
+        while (start < text.length() && text.charAt(start) <= ' ') start++;
+        String id = text.substring(start);
+        int identifierStart =
+                id.startsWith("ns=") || id.startsWith("nsu=") ? id.indexOf(';') + 1 : 0;
+        if (!id.startsWith("s=", identifierStart)) id = id.trim();
+        return fromNodeId(id, id, sampling, queue, true, 0, 0);
+    }
+
+    private static TagDefinition fromNodeId(
+            String alias,
+            String id,
+            double sampling,
+            int queue,
+            boolean discard,
+            int deadbandType,
+            double deadbandValue) {
+        if (alias == null || alias.trim().isEmpty() || id.isEmpty())
+            throw new IllegalArgumentException("A tag requires a nonempty alias and NodeId");
         if (!Double.isFinite(sampling) || sampling < 0 || sampling > 86400000)
             throw new IllegalArgumentException("samplingIntervalMs must be between 0 and 86400000");
         if (queue < 1 || queue > 1000000)

@@ -11,6 +11,9 @@ import java.util.function.Function;
 
 /** Optional startup enrichment, bounded by one request-timeout budget for the whole snapshot. */
 final class TagMetadataReader {
+    // OPC 10000-3, 8.2.4 limits string identifiers in characters and opaque identifiers in bytes.
+    private static final int MAX_IDENTIFIER_LENGTH = 4096;
+
     interface Decoder {
         Object decode(ExtensionObject value) throws Exception;
     }
@@ -101,7 +104,7 @@ final class TagMetadataReader {
                                             || !target.getTargetId().isLocal()) return null;
                                     NodeId id =
                                             target.getTargetId().toNodeId(namespaces).orElse(null);
-                                    return id != null && typeText(id) != null ? id : null;
+                                    return id != null && fitsIdentifierLimit(id) ? id : null;
                                 });
                 List<ReadValueId> requests = new ArrayList<>();
                 List<Integer> indexes = new ArrayList<>();
@@ -121,7 +124,12 @@ final class TagMetadataReader {
         } catch (Exception e) {
             attempt.check();
             // Metadata is optional. Never block value subscription because a server omits it.
-            failure = e.getClass().getSimpleName();
+            String exceptionType = e.getClass().getSimpleName();
+            failure =
+                    UaException.extractStatusCode(e)
+                            .flatMap(status -> StatusCodes.lookup(status.getValue()))
+                            .map(details -> exceptionType + "(" + details[0] + ")")
+                            .orElse(exceptionType);
         }
         List<TagDefinition> result = new ArrayList<>();
         int missingTypes = 0, missingUnits = 0;
@@ -158,6 +166,17 @@ final class TagMetadataReader {
         } catch (NotificationJson.RecordTooLargeException e) {
             return null;
         }
+    }
+
+    private static boolean fitsIdentifierLimit(NodeId id) {
+        Object identifier = id.getIdentifier();
+        if (identifier instanceof String) {
+            String text = (String) identifier;
+            return text.length() <= 2 * MAX_IDENTIFIER_LENGTH
+                    && text.codePointCount(0, text.length()) <= MAX_IDENTIFIER_LENGTH;
+        }
+        return !(identifier instanceof ByteString)
+                || ((ByteString) identifier).length() <= MAX_IDENTIFIER_LENGTH;
     }
 
     private TagMetadata units(DataValue result) {
@@ -220,14 +239,13 @@ final class TagMetadataReader {
                 }
                 offset += chunk.size();
             } catch (Exception e) {
-                UaException service = UaException.extract(e).orElse(null);
-                if (size > 1
-                        && service != null
-                        && (service.getStatusCode().getValue() == StatusCodes.Bad_TooManyOperations
-                                || service.getStatusCode().getValue()
-                                        == StatusCodes.Bad_ResponseTooLarge))
-                    size = Math.max(1, size / 2);
-                else throw e;
+                StatusCode code = UaException.extractStatusCode(e).orElse(null);
+                if (chunk.size() == 1 || code == null) throw e;
+                long status = code.getValue();
+                if (status != StatusCodes.Bad_TooManyOperations
+                        && status != StatusCodes.Bad_ResponseTooLarge
+                        && status != StatusCodes.Bad_RequestTooLarge) throw e;
+                size = chunk.size() / 2;
             }
         }
         return collected;

@@ -10,7 +10,9 @@ ConsumeOPCUA is an Apache NiFi processor that subscribes to OPC UA value changes
 - NiFi Verify connection checks, optional health reports, and record/buffer/FlowFile byte limits.
 - A local secured OPC UA server and NiFi UI for trying the processor.
 
-Maintained under the GitHub identity **paf91**. The current development build uses Maven group `io.github.paf91.nifi`, NAR artifact `nifi-opcua-nar` and the sole processor type `io.github.paf91.nifi.opcua.ConsumeOPCUA`. It does not load existing `SubscribeOpcUa` processors. Follow the [processor migration guide](docs/namespace-migration.md) before replacing an older installation. Release `1.0.4` retains its original artifact names and `SubscribeOpcUa` type.
+Maintained under the GitHub identity **paf91**. On both targets NiFi loads the sole processor type `io.github.paf91.nifi.opcua.ConsumeOPCUA` from runtime bundle `io.github.paf91.nifi:nifi-opcua-nar:1.0.5-SNAPSHOT`. Maven identifies the NiFi 1 and NiFi 2 NARs separately. [Maven artifacts](docs/development.md#maven-artifacts)
+
+Release `1.0.4` retains its original artifact names and `SubscribeOpcUa` type. Migrate existing `SubscribeOpcUa` processors before replacing an older installation. [Processor migration guide](docs/namespace-migration.md)
 
 This is an independent community project, not an Apache Software Foundation product.
 
@@ -19,7 +21,7 @@ This is an independent community project, not an Apache Software Foundation prod
 | Build | NiFi target | Java target | Milo | Build |
 |---|---|---|---|---|
 | Legacy (default) | 1.23.2 | 8 | 0.6.16 | `mvn clean verify` |
-| Modern | 2.12.0 | 21 | 1.1.8 | `mvn -Pnifi2 -Dnifi.version=2.12.0 clean verify` |
+| Modern | 2.12.0 | 21 | 1.1.8 | `mvn -Pnifi2 clean verify` |
 
 **Development version 1.0.5-SNAPSHOT** adds selectable output fields, NDJSON, timestamp formats, optional batch delay, quality routing, cached tag metadata and JKS/PKCS12 identity/trust stores. It reduces primitive-array encoding allocations and avoids a full NiFi yield while waiting for an asynchronous commit. Default output and in-memory delivery semantics are preserved. See [output](docs/output.md), [changelog](CHANGELOG.md), and the [validation record](docs/validation.md). This development build is not a published release; the last release is 1.0.4.
 
@@ -39,7 +41,7 @@ python3 scripts/verify-nar.py nar/target/nifi-opcua-1.23.2-1.0.5-SNAPSHOT.nar 52
 For NiFi 2, use JDK 21:
 
 ```sh
-mvn -B -ntp -Pnifi2 -Dnifi.version=2.12.0 clean verify
+mvn -B -ntp -Pnifi2 clean verify
 python3 scripts/verify-nar.py nar/target/nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar 65
 ```
 

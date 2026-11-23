@@ -4,11 +4,15 @@
 
 Scheduling prepares state without opening a session. A trigger opens the subscription. In a cluster, this requires the node to be connected and primary. A full outbound queue can delay initial connection and recovery. Observe successful data and bulletins, not only the NiFi RUNNING indicator.
 
+During setup, the processor holds early notifications within the configured count and byte limits. It makes them available for delivery only after every configured monitored item succeeds and the processor takes ownership of the connection. A failed or cancelled setup discards that attempt's notifications.
+
 Stop cancels startup and closes owned transports and PKI-directory watchers. Late callbacks from the old connection add no records. After active triggers finish, it attempts to commit already buffered records for up to **Stop Drain Timeout (ms)**, default **5000**. Set zero to stop without that attempt. Draining respects batch count/byte limits, downstream backpressure and current primary ownership. It stops at the first failure, interruption or deadline; it does not retry a failing repository indefinitely. A clean drain produces no pending-data warning. Otherwise the warning gives the count and reason, and Start drains the retained records before opening a new subscription.
 
-During initial setup, Request Timeout bounds OPC operations, including session acquisition for NiFi 2 operation-limit reads and monitored-item creation. Optional tag metadata requests share one timeout budget. Other setup operations receive individual deadlines, so the setting is not a deadline for the entire startup of a large tag list. Milo manages established-session recovery separately. NiFi/JVM restart loses the memory queue.
+During initial setup, Request Timeout bounds individual OPC operations, including session acquisition for NiFi 2 operation-limit reads and monitored-item creation. Optional tag metadata requests share one timeout budget. A large tag list can take longer than one Request Timeout to start. NiFi/JVM restart loses the memory queue.
 
-A server restart may preserve/transfer a session or require a new subscription. Failed transfer, bad status and watchdog events request recovery. The server can repeat current values when a subscription is recreated.
+When a multi-item create call fails with `Bad_TooManyOperations` or `Bad_RequestTooLarge` during initial setup, both profiles halve the number of items in that request. They retain previously accepted items. NiFi 2 requires a matching service-rejection reply or a local `Bad_RequestTooLarge` serialization failure before any request bytes are written. It does not retry a disconnect or another unknown server outcome. On both profiles, a one-item rejection, timeout or `Bad_ResponseTooLarge` does not qualify. A later connection attempt follows Reconnect Delay. Milo manages recovery of established sessions separately.
+
+After a reconnect, Milo can reactivate the session or transfer the subscription to a different session. Numeric tags without cached metadata can receive queued notifications after a successful transfer. For namespace-URI tags or selected cached metadata, the processor requests a new connection during initialization of the replacement session, before admitting its notifications. Values already in the local buffer keep their original tag and metadata. Failed transfer, bad status and watchdog events request recovery. The server can repeat current values when a subscription is recreated.
 
 ## Certificate and truststore rotation
 

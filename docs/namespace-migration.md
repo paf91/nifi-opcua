@@ -4,8 +4,8 @@ The current development build registers only `io.github.paf91.nifi.opcua.Consume
 
 | Identity | Earlier public build | Current development build |
 |---|---|---|
-| Maven group | `io.github.paf91.nifi` | `io.github.paf91.nifi` |
-| NAR artifact | `nifi-opcua-subscriber-nar` | `nifi-opcua-nar` |
+| NiFi bundle group | `io.github.paf91.nifi` | `io.github.paf91.nifi` |
+| NiFi bundle artifact (`Nar-Id`) | `nifi-opcua-subscriber-nar` | `nifi-opcua-nar` |
 | Processor type | `io.github.paf91.nifi.opcua.SubscribeOpcUa` | `io.github.paf91.nifi.opcua.ConsumeOPCUA` |
 
 Release **1.0.4** keeps its original artifact names and processor type. Earlier development builds and the renamed build can both have version **1.0.5-SNAPSHOT**, but their artifact IDs differ. NiFi stores the full processor type and bundle coordinates with the flow. Replacing a NAR or using **Change version** does not convert the changed type and artifact.

@@ -66,7 +66,7 @@ class ServerCertificateValidationTest {
             Files.write(pki, new byte[] {1});
         }
         OpcSettings settings = settings(mode, pki, "test-password", encryptedTokenOnly);
-        ConnectionDiagnostics report = new ConnectionDiagnostics();
+        ConnectionDiagnostics report = new ConnectionDiagnostics(value -> value, true);
         // Bypassing the certificate validator does not bypass Java's mandatory signing-key
         // usage check when Milo verifies the server's CreateSession signature.
         boolean signatureRejectsKeyUsage =
@@ -121,6 +121,14 @@ class ServerCertificateValidationTest {
             }
         }
         assertEquals(mode.value(), report.snapshot().get("serverCertificateValidation"));
+        String trust = report.trustExplanation(null);
+        if (mode == ServerCertificateValidation.NONE) {
+            assertTrue(trust.contains("trust source was skipped"), trust);
+        } else if (scenario == Scenario.MISSING_PKI || scenario == Scenario.PKI_IS_FILE) {
+            assertTrue(trust.contains("could not be opened"), trust);
+        } else {
+            assertTrue(trust.contains("trusted certificates = "), trust);
+        }
         if (mode == ServerCertificateValidation.NONE && scenario == Scenario.UNTRUSTED)
             assertFalse(Files.exists(pki), "None must not initialize or write a PKI directory");
     }

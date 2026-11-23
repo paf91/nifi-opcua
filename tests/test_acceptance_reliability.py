@@ -549,6 +549,38 @@ class FinalStopTest(unittest.TestCase):
 
 
 class PhaseWaitTest(unittest.TestCase):
+    def test_positive_result_after_deadline_cannot_pass_final_stop(self):
+        harness = FinalStopTest().final_harness()
+        clock = FakeClock()
+        def slow_observation():
+            clock.sleep(31)
+            return {'processorStopped': True}
+        harness.stopped_resources = slow_observation
+        with patch.object(acceptance.time, 'monotonic', clock.monotonic), \
+                patch.object(acceptance.time, 'sleep', clock.sleep), redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'after the deadline'):
+                harness.final_stop()
+        harness.check.assert_not_called()
+        harness.snapshot.assert_not_called()
+
+    def test_nested_wait_and_http_requests_share_the_outer_budget(self):
+        harness = harness_stub()
+        clock = FakeClock()
+        harness.ports = {'node1': '8080'}
+        def observation():
+            clock.sleep(3)
+            harness.api('node1', 'GET', '/test')
+            return False
+        with patch.object(acceptance.time, 'monotonic', clock.monotonic), \
+                patch.object(acceptance.time, 'sleep', clock.sleep), \
+                patch.object(acceptance.urllib.request, 'urlopen') as open_url, redirect_stdout(io.StringIO()):
+            open_url.return_value.__enter__.return_value.read.return_value = b'{}'
+            with self.assertRaisesRegex(RuntimeError, 'outer; elapsed=5.0s'):
+                harness.wait('outer', lambda: harness.wait('inner', observation, 180), 5)
+            self.assertEqual(1, open_url.call_count)
+            self.assertEqual(2, open_url.call_args.kwargs['timeout'])
+            self.assertEqual(20, harness.request_timeout(20))
+
     def test_timeout_reports_phase_elapsed_limit_and_last_progress(self):
         harness = harness_stub()
         clock = FakeClock()
@@ -559,6 +591,95 @@ class PhaseWaitTest(unittest.TestCase):
                           'lastProgress': 'False'}, harness.report['progress'])
         self.assertIn('Waiting:', output.getvalue())
         self.assertEqual(5, clock.now)
+
+
+class ClusterOwnershipTest(unittest.TestCase):
+    def harness(self):
+        h = harness_stub()
+        h.nodes = ['node1', 'node2']
+        h.connected = Mock(return_value=[
+            {'address': 'node1', 'nodeId': 'first', 'roles': ['Primary Node']},
+            {'address': 'node2', 'nodeId': 'second', 'roles': []}])
+        h.api = Mock(return_value={'component': {'loadBalanceStrategy': 'DO_NOT_LOAD_BALANCE',
+                                                 'backPressureObjectThreshold': 10,
+                                                 'backPressureDataSizeThreshold': '10 MB'},
+                                   'listingRequest': {'id': 'listing'}})
+        h.connection_settings = Mock()
+        h.queue_count_now = Mock(return_value=0)
+        h.stopped = Mock(return_value=True)
+        h.metrics = Mock(side_effect=[{'subscriptions': 1, 'tick': 10}, {'subscriptions': 1, 'tick': 15}])
+        return h
+
+    def listing(self, *rows):
+        return {'flowFileSummaries': [{'uuid': uuid, 'clusterNodeId': owner} for uuid, owner in rows],
+                'queueSize': {'objectCount': len(rows)}}
+
+    def test_only_new_uuids_count_for_their_origin_node(self):
+        h = self.harness()
+        h._listing = Mock(side_effect=[self.listing(('old', 'second')),
+            self.listing(('old', 'second'), ('fresh', 'first'))])
+        with patch.object(acceptance.time, 'sleep'):
+            h.primary_ownership()
+        h.check.assert_called_once_with('primary-only-delivery',
+            {'primary': 'node1', 'freshFlowFiles': {'node1': 1, 'node2': 0}})
+        self.assertEqual([call('sink', 'STOPPED'), call('sink', 'RUNNING')], h.state.call_args_list)
+
+    def test_primary_can_add_a_new_uuid_after_filling_the_baseline_queue(self):
+        h = self.harness()
+        rows = [(str(i), 'first') for i in range(10)]
+        def snapshot(base, lid):
+            has_room = h.connection_settings.call_count and h.connection_settings.call_args.args[0]['backPressureObjectThreshold'] > 10
+            return self.listing(*(rows + ([('fresh', 'first')] if has_room else [])))
+        h._listing = Mock(side_effect=snapshot)
+        with patch.object(acceptance.time, 'sleep'):
+            h.primary_ownership()
+        self.assertEqual(1, h.check.call_args.args[1]['freshFlowFiles']['node1'])
+        h.connection_settings.assert_called_with({'backPressureObjectThreshold': 10, 'backPressureDataSizeThreshold': '10 MB'})
+
+    def test_flowfile_appended_while_nifi_collects_listing_rows(self):
+        h = self.harness()
+        listing = self.listing(('old', 'first'), ('appended', 'first'))
+        listing['queueSize']['objectCount'] = 1
+        h._listing = Mock(return_value=listing)
+        self.assertEqual({'old': 'first', 'appended': 'first'}, h.queued_owners({'first', 'second'}))
+
+    def test_ambiguous_or_standby_delivery_cannot_pass(self):
+        for case in ('truncated', 'duplicate', 'unknown', 'moved', 'missing', 'unchanged', 'standby',
+                     'role change', 'missing node', 'load balanced', 'listing failed', 'stale server metrics',
+                     'listing cap'):
+            with self.subTest(case=case):
+                h = self.harness()
+                last = self.listing(('old', 'first'), ('fresh', 'first'))
+                if case == 'truncated':
+                    last['queueSize']['objectCount'] += 1
+                elif case == 'duplicate':
+                    last = self.listing(('old', 'first'), ('old', 'first'))
+                elif case == 'listing cap':
+                    last = self.listing(('old', 'first'), *((str(i), 'first') for i in range(99)))
+                elif case in ('unknown', 'standby'):
+                    last = self.listing(('old', 'first'), ('fresh', 'third' if case == 'unknown' else 'second'))
+                elif case == 'moved':
+                    last = self.listing(('old', 'second'), ('fresh', 'first'))
+                elif case == 'missing':
+                    last = self.listing(('fresh', 'first'))
+                elif case == 'unchanged':
+                    last = self.listing(('old', 'first'))
+                elif case == 'listing failed':
+                    last['failureReason'] = 'listing unavailable'
+                elif case == 'stale server metrics':
+                    h.metrics.side_effect = [{'subscriptions': 1, 'tick': 10}] * 2
+                elif case in ('role change', 'missing node'):
+                    original = h.connected.return_value
+                    changed = [dict(original[0], roles=[]), dict(original[1], roles=['Primary Node'])]
+                    h.connected.side_effect = [original, changed if case == 'role change' else original[:1]]
+                else:
+                    h.api.return_value['component']['loadBalanceStrategy'] = 'ROUND_ROBIN'
+                h._listing = Mock(side_effect=[self.listing(('old', 'first')), last])
+                with patch.object(acceptance.time, 'sleep'), self.assertRaises(AssertionError):
+                    h.primary_ownership()
+                h.check.assert_not_called()
+                if case != 'load balanced':
+                    h.state.assert_called_with('sink', 'RUNNING')
 
 
 class SoakProgressTest(unittest.TestCase):

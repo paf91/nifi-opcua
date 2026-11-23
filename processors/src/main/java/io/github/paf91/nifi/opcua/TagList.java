@@ -37,11 +37,9 @@ final class TagList {
                 String source = "Tags entry " + (i + 1);
                 try {
                     JsonNode entry = array.get(i);
-                    String alias;
-                    String value;
+                    TagDefinition tag;
                     if (entry.isTextual()) {
-                        alias = entry.textValue().trim();
-                        value = alias;
+                        tag = TagDefinition.parseJsonString(entry.textValue(), sampling, queue);
                     } else if (entry.isObject()) {
                         ObjectNode options = ((ObjectNode) entry).deepCopy();
                         JsonNode name = options.remove("alias");
@@ -50,20 +48,15 @@ final class TagList {
                             throw new IllegalArgumentException("alias must be a nonempty string");
                         if (!options.hasNonNull("nodeId") || !options.get("nodeId").isTextual())
                             throw new IllegalArgumentException("nodeId must be a string");
-                        alias =
+                        String alias =
                                 name == null
                                         ? options.get("nodeId").textValue()
                                         : name.textValue().trim();
-                        value = options.toString();
+                        tag = TagDefinition.parse(alias, options.toString(), sampling, queue);
                     } else
                         throw new IllegalArgumentException(
                                 "Expected a NodeId string or tag object");
-                    add(
-                            tags,
-                            aliases,
-                            nodes,
-                            TagDefinition.parse(alias, value, sampling, queue),
-                            source);
+                    add(tags, aliases, nodes, tag, source);
                 } catch (IllegalArgumentException e) {
                     throw at(source, e);
                 }

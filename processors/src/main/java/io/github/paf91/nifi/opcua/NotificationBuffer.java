@@ -17,7 +17,7 @@ final class NotificationBuffer {
     private int relationshipTransitions;
     private boolean reserved;
     final OutputSettings output;
-    private final ArrayDeque<Entry> queue = new ArrayDeque<>();
+    private ArrayDeque<Entry> queue = new ArrayDeque<>();
 
     private static final class Entry {
         final byte[] value;
@@ -51,6 +51,22 @@ final class NotificationBuffer {
         this.byteCapacity = byteCapacity;
         this.maximumRecordBytes = maximumRecordBytes;
         this.output = Objects.requireNonNull(output);
+    }
+
+    synchronized NotificationBuffer emptyCopy() {
+        NotificationBuffer copy =
+                new NotificationBuffer(capacity, byteCapacity, maximumRecordBytes, output);
+        copy.peakBytes = peakBytes;
+        return copy;
+    }
+
+    /** Release staged records even if a cancelled callback still references this buffer. */
+    synchronized void discard() {
+        queue = new ArrayDeque<>();
+        bytes = 0;
+        relationshipTransitions = 0;
+        reserved = false;
+        notifyAll();
     }
 
     synchronized boolean offer(byte[] value) {

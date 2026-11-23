@@ -21,7 +21,7 @@
 | Server Trust Source | PKI Directory (default), JKS or PKCS12 |
 | Server Truststore File | With JKS/PKCS12: absolute path to the store containing trusted-certificate entries |
 | Server Truststore Password | Optional sensitive store password; unset means an empty password |
-| PKI Directory | Server trust in directory mode; optional issuer/CRL material in store mode |
+| PKI Directory | PKI root on the NiFi host. Put one certificate per file in the relevant `certs/` subdirectories. In store mode this root supplies optional issuer certificates and CRLs. |
 | Username / Password | OPC UA user credentials; Password is sensitive |
 
 ## Security and authentication
@@ -57,7 +57,7 @@ Policy None requires mode None. Other policies require Sign or SignAndEncrypt. U
 | Non-None / Sign | None | Rejected | Rejected | Allowed |
 | Non-None / SignAndEncrypt | None | Allowed | Allowed | Allowed |
 
-A missing or empty token-policy URI inherits the channel policy. For each matching endpoint, selection prefers an encrypted token using the channel policy, then another supported RSA token, then an unencrypted token if allowed. This preference applies under every setting, including Always. Unsupported token policies are skipped. A certificate-validation failure for the selected encrypted token ends the attempt without falling back to plaintext.
+A missing or empty token-policy URI inherits the channel policy. Among all endpoints matching the configured channel and login, the processor prefers a username token encrypted with the channel policy, then one using another supported RSA policy, then a None-policy token if allowed. For equally ranked tokens, the first advertised endpoint and token win. This order also applies with **Always (insecure)**. If certificate validation fails for the selected token, the attempt ends.
 
 In the NiFi UI, **Always (insecure)** has the stored value `Always`. It permits plaintext credentials on a Sign channel and does not force plaintext when an encrypted token is available. **Never** still accepts a None-policy token on SignAndEncrypt because the channel encrypts it.
 
@@ -66,7 +66,7 @@ In the NiFi UI, **Always (insecure)** has the stored value `Always`. It permits 
 Check these cases when replacing an earlier development build:
 
 - A Sign channel offering only a None-policy username token now fails with the default None channels only setting. Configure an encrypted username token or SignAndEncrypt. To retain deliberate plaintext compatibility on Sign, select Always (insecure).
-- A None channel offering both encrypted and unencrypted username tokens now selects encryption regardless of token order. With Full or Certificate validation, configure the selected server trust source before starting. Failed trust does not cause a plaintext retry, even with Always.
+- If any matching None/None endpoint offers a supported encrypted username token, it takes precedence even when the first endpoint advertises only an unencrypted token. With Full or Certificate validation, configure server trust for the endpoint that supplies the encrypted token.
 
 ## Certificates and trust
 
@@ -86,7 +86,7 @@ PKCS12 loading uses the JVM's keystore provider. Passwordless stores with no MAC
 
 The server trust source is separate from client identity and user credentials. With Full or Certificate validation on a secured channel, the OPC UA administrator must trust the client certificate, and NiFi must trust the server certificate or its CA.
 
-**Server Trust Source = PKI Directory** uses the existing directory trust layout. Populate it before starting. The issuer-directory name depends on the build target:
+With **Server Trust Source = PKI Directory**, set **PKI Directory** to the root of the following layout on each eligible NiFi node. Put one certificate per file immediately inside the appropriate `certs/` directory. Milo loads only the first certificate in a multi-certificate PEM and skips files placed directly in the PKI root.
 
 | Material | NiFi 1 / Milo 0.6 | NiFi 2 / Milo 1 |
 |---|---|---|
@@ -95,7 +95,7 @@ The server trust source is separate from client identity and user credentials. W
 | Intermediate CA certificates | `issuers/certs/` | `issuer/certs/` |
 | Intermediate CA revocation lists | `issuers/crl/` | `issuer/crl/` |
 
-All paths in this table are relative to **PKI Directory**. The PKI root and these locations must be directories; an ordinary file at one of these paths causes initialization to fail. Existing directory symlinks are allowed. When moving configuration between NAR variants, use the destination target's issuer-directory name. Clear Server Truststore File and Server Truststore Password when selecting the PKI Directory source.
+For CA-based trust, obtain the approved root independently and put it in `trusted/certs/`. If the server omits an intermediate from its chain, put that certificate in the target's issuer certificate directory. Obtain current, applicable certificate revocation lists (CRLs) from the issuing authorities. The PKI root and the locations in the table must be directories. Existing directory symlinks are allowed. Clear Server Truststore File and Server Truststore Password when selecting the PKI Directory source.
 
 **Server Trust Source = JKS** or **PKCS12** loads trusted-certificate entries from **Server Truststore File**. **Server Truststore Password** is optional; unset supplies an empty password. A store with no trusted-certificate entries fails loading. Certificates attached only to private-key entries do not become trust anchors.
 
@@ -109,6 +109,8 @@ keytool -importcert -alias opcua-server -file server.crt \
 ```
 
 Verify the certificate's identity before confirming the import. The command prompts for the store password. OpenSSL can export Java trusted entries with `pkcs12 -jdktrust` when that option is available. Check `openssl pkcs12 -help` first: it was available in tested OpenSSL 3.5.9 but absent in 3.0.2.
+
+If you trust a CA-issued server leaf directly, keep the leaf as the trusted entry and put its issuing root and any missing intermediates in the issuer certificate directory for your NiFi version. A self-signed server leaf has no separate issuer.
 
 In store mode, an optional **PKI Directory** supplies issuer certificates and both CRL lists using the paths above. Its `trusted/certs/` entries are ignored: the selected truststore is the sole source of trust anchors. The processor does not import store entries into the directory or write to either store. Full and Certificate keep their revocation checks, so a CA deployment may still need this PKI directory for applicable CRLs. Missing required CRLs or a certificate listed as revoked still fail validation.
 
@@ -178,7 +180,7 @@ With overrides:
 Processor-wide defaults are publishing interval **1000 ms**, sampling **1000 ms**, monitored item queue **100**, local notification capacity **10000**, batch size **500**, request timeout **10000 ms**, and reconnect delay **5000 ms**. The count and byte limits both apply. The default buffer byte capacity is 64 MiB, maximum record size is 1 MiB, and maximum success FlowFile size is 4 MiB (including JSON punctuation). Diagnostics reports are disabled by default.
 
 
-NodeIds are case-sensitive. Whitespace around a list entry is trimmed; punctuation within the NodeId is preserved. Namespace indexes belong to the target server and can change after reconfiguration. Obtain the complete NodeId from that server's address-space browser. This processor resolves explicit namespace URIs; it does not discover measurement tags automatically. Optional engineering-unit metadata uses an explicit property browse path.
+NodeIds are case-sensitive. Plaintext entries trim surrounding whitespace. In a JSON array, both `"ns=2;s=Pump A "` and `{"nodeId":"ns=2;s=Pump A "}` address the string identifier ending in a space. A bare JSON address accepts leading padding and trims trailing padding on numeric, GUID and opaque NodeIds. When upgrading, remove an accidental trailing space after `Pump A` if the server identifier ends at the letter `A`. Namespace indexes belong to the target server and can change after reconfiguration. Obtain the complete NodeId from that server's address-space browser. This processor resolves explicit namespace URIs; it does not discover measurement tags automatically. Optional engineering-unit metadata uses an explicit property browse path.
 
 ## Required and optional properties
 

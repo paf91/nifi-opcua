@@ -5,12 +5,33 @@ import java.util.concurrent.*;
 
 /** One connection generation; cancellation also fences late callbacks. */
 final class ConnectionAttempt {
+    final NotificationBuffer destination;
+    private boolean staged;
     private volatile boolean cancelled;
     private Thread blockingThread;
+
+    ConnectionAttempt() {
+        this(null);
+    }
+
+    ConnectionAttempt(NotificationBuffer destination) {
+        this.destination = destination;
+        staged = destination != null;
+    }
+
+    synchronized void publish(Runnable publication) {
+        check();
+        publication.run();
+        staged = false;
+    }
 
     synchronized void cancel() {
         cancelled = true;
         if (blockingThread != null) blockingThread.interrupt();
+        if (staged) {
+            destination.discard();
+            staged = false;
+        }
     }
 
     boolean isCancelled() {

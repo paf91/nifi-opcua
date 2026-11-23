@@ -2,7 +2,7 @@
 
 ## Local checks
 
-Run from the repository root. Use JDK 8 for the legacy release build and JDK 21 for the modern release build. Also verify the modern profile under JDK 25:
+Run from the repository root. Use Linux or WSL for the full Python test suite and release tools. Use JDK 8 for the legacy release build and JDK 21 for the modern release build. Also verify the modern profile under JDK 25:
 
 ```sh
 python3 scripts/check-project.py
@@ -16,7 +16,7 @@ python3 scripts/nar-inventory.py nar/target/nifi-opcua-1.23.2-1.0.5-SNAPSHOT.nar
 Save the legacy NAR/reports outside target, switch to JDK 21, then:
 
 ```sh
-mvn -B -ntp -Pnifi2 -Dnifi.version=2.12.0 clean verify
+mvn -B -ntp -Pnifi2 clean verify
 python3 scripts/verify-nar.py nar/target/nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar 65
 python3 scripts/nar-inventory.py nar/target/nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar --output nar/target/dependency-inventory.json
 python3 scripts/format-java.py --check
@@ -24,7 +24,7 @@ python3 scripts/format-java.py --check
 
 Save the modern NAR/reports outside target, switch to JDK 25, and repeat the modern Maven build, NAR verification and inventory commands above. The modern profile still compiles for Java 21, with class-file version 65. Java 25 provides additional build/test verification. There remain two NAR variants, and the release builder uses JDK 8 and JDK 21. A successful Java 25 build and packaging check does not establish a deployed NiFi runtime on Java 25 or compatibility with the current Apache NiFi source reactor.
 
-The explicit `-Dnifi.version=2.12.0` is required for the modern NAR build. The NAR plugin reconstructs dependency POMs without the command-line profile selection when choosing its documentation API. Supplying the version as a system property keeps documentation generation on the same NiFi API used for compilation. CI and the release builder pass this property automatically.
+The root POM defines each NiFi version and Java target in `nifi1.version` and `nifi1.java` or `nifi2.version` and `nifi2.java`. The selected modules supply the NiFi API version to compilation and NAR documentation generation. CI can also pin `nifi.version` explicitly.
 
 CI and the release builder pass `-s scripts/maven-ci-settings.xml` to every Maven invocation, including the demo build. That settings file mirrors only the `dash-licenses-releases` and `rso-public-grid` repository IDs to `https://repo.maven.apache.org/maven2`. Local builds can add the same option, for example `mvn -s scripts/maven-ci-settings.xml -B -ntp clean verify`. The option selects the user settings file for that invocation. If you need existing user settings such as credentials or other mirrors, merge this narrow mirror into those settings and select the merged file. No global Maven configuration change is needed.
 
@@ -49,6 +49,41 @@ GitHub Actions runs repository checks and three build/test combinations on pull 
 The GitLab pipeline builds the same checksum-pinned open62541 fixture in a separate Ubuntu job and supplies it to all three Maven jobs. Its Java 25 job inherits the modern build configuration. Both CI providers limit jobs to 60 minutes, check the JUnit reports and fail if an independent-server suite is missing or skipped. All three builds retain dependency inventory and advisory checks. GitLab also runs repository checks, Python tests, Java formatting and the Java 8 demo build, matching those GitHub checks before publication. Keep the successful GitLab pipeline link with the release evidence; local successful tests do not imply that remote CI ran.
 
 CI and the local release builder cap the Maven heap at 512 MiB and the Surefire test JVM heap at 1 GiB. Explicit small-heap child-process settings in resource tests remain in effect.
+
+## Maven artifacts
+
+Both targets use group `io.github.paf91.nifi` and development version `1.0.5-SNAPSHOT`. The root build selects modules with `-Pnifi1` (the default target) or `-Pnifi2`. Maven consumers select the target by its artifact IDs.
+
+| Target | NAR artifact ID | Processor JAR artifact ID |
+|---|---|---|
+| NiFi 1.23.2 / Java 8 | `nifi-opcua-nar` | `nifi-opcua-processors` |
+| NiFi 2.12.0 / Java 21 | `nifi-opcua-nifi2-nar` | `nifi-opcua-nifi2-processors` |
+
+In NiFi, both variants identify the bundle as `io.github.paf91.nifi:nifi-opcua-nar:1.0.5-SNAPSHOT`. Use the NAR for the installed NiFi/JDK target. [Operator filenames and installation](installation.md#pick-the-artifact)
+
+For local Maven consumption, install both variants into the same local repository. Run the first command on JDK 8, then switch to JDK 21 for the second.
+
+```sh
+mvn -B -ntp -Pnifi1,publication clean install
+mvn -B -ntp -Pnifi2,publication clean install
+```
+
+The `publication` profile writes standalone consumer POMs with the target's effective dependency versions. It attaches the target processor's source and Javadoc JARs under the `sources` and `javadoc` classifiers for both the processor JAR and the NAR. For ordinary builds and NAR installation into NiFi, use the target build in [Local checks](#local-checks).
+
+In a separate consumer POM, select the NAR artifact ID and declare its type as `nar`. Maven resolves its matching processor JAR and dependencies without any producer profile. For NiFi 2, add this dependency.
+
+```xml
+<dependency>
+  <groupId>io.github.paf91.nifi</groupId>
+  <artifactId>nifi-opcua-nifi2-nar</artifactId>
+  <version>1.0.5-SNAPSHOT</version>
+  <type>nar</type>
+</dependency>
+```
+
+Before publishing, resolve each of the four artifact IDs from a consumer project with a single dependency. Run `mvn dependency:tree -Dscope=runtime` and compare the resolved JAR filenames and SHA-256 digests with the target NAR inventory. This catches dependency versions selected only by the producer's dependency management. The NiFi API and SLF4J API should have provided scope in the published POMs and should be absent from the consumer runtime.
+
+These install commands prepare a local SNAPSHOT. A future Maven Central release requires a release version, a Central Portal account authorized for the namespace, and PGP signatures for the artifacts and POMs submitted. [Central Portal registration](https://central.sonatype.org/register/central-portal/) · [Maven Central publishing requirements](https://central.sonatype.org/publish/requirements/)
 
 ## Artifact verification
 
@@ -97,7 +132,7 @@ The GitHub repository is `paf91/nifi-opcua`. Updating local source or artifacts 
 
 ## Automated local release
 
-After committing the intended source, run:
+After committing the intended source, run from Linux or WSL:
 
 ```sh
 python3 scripts/release.py --output dist/release-1.0.5-SNAPSHOT --maven-cache ~/.m2

@@ -9,7 +9,8 @@ from xml.etree import ElementTree
 import zipfile
 
 GROUP = "io.github.paf91.nifi"
-PROCESSOR_ARTIFACT = "nifi-opcua-processors"
+MAVEN_TARGETS = {52: ("nifi-opcua-nar", "nifi-opcua-processors"),
+                 65: ("nifi-opcua-nifi2-nar", "nifi-opcua-nifi2-processors")}
 PROCESSOR = "io.github.paf91.nifi.opcua.ConsumeOPCUA"
 RETIRED_PROCESSOR = "io.github.paf91.nifi.opcua.SubscribeOpcUa"
 SERVICE = "META-INF/services/org.apache.nifi.processor.Processor"
@@ -18,6 +19,22 @@ SERVICE = "META-INF/services/org.apache.nifi.processor.Processor"
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def verify_maven_coordinates(archive, artifact, version):
+    prefix = f"META-INF/maven/{GROUP}/"
+    expected = f"{prefix}{artifact}/pom.properties"
+    descriptors = [name for name in archive.namelist()
+                   if name.startswith(prefix) and name.endswith("/pom.properties")]
+    require(descriptors == [expected], "Unexpected Maven descriptor for " + artifact)
+    properties = {}
+    for line in archive.read(expected).decode().splitlines():
+        if "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            properties[key.strip()] = value.strip()
+    require(all(properties.get(key) == value for key, value in
+                (("groupId", GROUP), ("artifactId", artifact), ("version", version))),
+            "Unexpected Maven coordinates for " + artifact)
 
 
 def service_providers(archive):
@@ -39,6 +56,8 @@ def reject_retired_content(archive):
 
 
 def verify(path, maximum):
+    nar_artifact, processor_artifact = MAVEN_TARGETS[maximum]
+    processor_ids = [processor_id for _, processor_id in MAVEN_TARGETS.values()]
     classes = 0
     processors = 0
     processor_classes = 0
@@ -53,6 +72,7 @@ def verify(path, maximum):
                 "Unexpected NAR bundle coordinates")
         version = manifest.get("Nar-Version")
         require(version is not None and bool(version.strip()), "NAR bundle version is missing")
+        verify_maven_coordinates(nar, nar_artifact, version)
         documentation = ElementTree.fromstring(nar.read("META-INF/docs/extension-manifest.xml"))
         for key, value in (("groupId", GROUP), ("artifactId", "nifi-opcua-nar"), ("version", version)):
             require([entry.text for entry in documentation.findall(key)] == [value],
@@ -79,16 +99,15 @@ def verify(path, maximum):
                 reject_retired_content(jar)
                 if SERVICE in jar.namelist():
                     providers.extend(service_providers(jar))
-                if "/" + PROCESSOR_ARTIFACT + "-" in name:
+                filename = Path(name).name
+                is_processor = any(filename.startswith(artifact + "-") or
+                                   f"META-INF/maven/{GROUP}/{artifact}/pom.properties" in jar.namelist()
+                                   for artifact in processor_ids)
+                if is_processor:
+                    require(filename == f"{processor_artifact}-{version}.jar",
+                            "Unexpected processor JAR for this target: " + name)
                     processors += 1
-                    properties = {}
-                    for line in jar.read(f"META-INF/maven/{GROUP}/{PROCESSOR_ARTIFACT}/pom.properties").decode().splitlines():
-                        if "=" in line and not line.startswith("#"):
-                            key, value = line.split("=", 1)
-                            properties[key.strip()] = value.strip()
-                    require(all(properties.get(key) == value for key, value in
-                                (("groupId", GROUP), ("artifactId", PROCESSOR_ARTIFACT), ("version", version))),
-                            "Unexpected processor JAR Maven coordinates")
+                    verify_maven_coordinates(jar, processor_artifact, version)
                     require(service_providers(jar) == [PROCESSOR],
                             "Expected exactly one ConsumeOPCUA service registration")
                     require("META-INF/LICENSE" in jar.namelist(), "Processor JAR license is missing")
@@ -106,6 +125,8 @@ def verify(path, maximum):
                     require(len(data) >= 8 and data[:4] == b"\xca\xfe\xba\xbe", "Invalid class file: " + entry)
                     major = struct.unpack(">H", data[6:8])[0]
                     require(major <= maximum, f"Incompatible bytecode: {name}: {entry}: {major} > {maximum}")
+                    if is_processor:
+                        require(major == maximum, f"Incompatible bytecode: {name}: {entry}: expected {maximum}, found {major}")
                     classes += 1
         require(processors == 1, "Expected exactly one processor JAR")
         require(processor_classes == 1, "Expected exactly one ConsumeOPCUA class entry across all bundled JARs")
