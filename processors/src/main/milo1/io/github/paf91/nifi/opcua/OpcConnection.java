@@ -20,6 +20,7 @@ import org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.UInteger;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.*;
 import org.eclipse.milo.opcua.stack.core.types.structured.EndpointDescription;
 import org.eclipse.milo.opcua.stack.core.types.structured.RequestHeader;
+import org.eclipse.milo.opcua.stack.core.util.Unit;
 import org.eclipse.milo.opcua.stack.transport.client.tcp.*;
 
 import java.util.*;
@@ -84,10 +85,12 @@ final class OpcConnection implements AutoCloseable {
             EndpointDescription endpoint = settings.security().selectEndpoint(endpoints);
             diagnostics.selected(endpoint);
             diagnostics.stage("Configuring server trust");
+            boolean requiresTrust = settings.security().requiresServerTrust(endpoint);
+            diagnostics.trustRequired(settings.serverCertificateValidation(), requiresTrust);
             CertificateValidator validator = rejectUnconfiguredTrust();
             if (settings.serverCertificateValidation() == ServerCertificateValidation.NONE) {
                 validator = serverValidator(settings.serverCertificateValidation(), null);
-            } else if (settings.security().requiresServerTrust(endpoint)) {
+            } else if (requiresTrust) {
                 TrustListManager manager;
                 if (settings.serverTrustStore() != null) {
                     StoreTrustListManager store =
@@ -104,6 +107,7 @@ final class OpcConnection implements AutoCloseable {
                     trust = directory;
                     manager = directory;
                 }
+                diagnostics.trustLoaded(settings, manager, "issuer");
                 validator = serverValidator(settings.serverCertificateValidation(), manager);
             }
             attempt.check();
@@ -118,25 +122,27 @@ final class OpcConnection implements AutoCloseable {
                                             .build()),
                             attempt);
             final boolean resolveUris = TagResolver.needsNamespaces(settings.tags());
-            client.addSessionActivityListener(
-                    new org.eclipse.milo.opcua.sdk.client.SessionActivityListener() {
-                        @Override
-                        public void onSessionActive(
-                                org.eclipse.milo.opcua.sdk.client.UaSession session) {
+            if (resolveUris || settings.output().metadata()) {
+                // A transferred subscription can receive a Publish response before onSessionActive.
+                client.addSessionInitializer(
+                        (ignored, session) -> {
                             ifActive(
                                     () -> {
-                                        boolean changed =
-                                                diagnostics.sessionActive(session.getSessionId());
-                                        if (changed
-                                                && (resolveUris || settings.output().metadata())) {
-                                            // Request a rebuild on a new session to refresh
-                                            // namespace-URI resolution or selected tag metadata
-                                            // before accepting more values.
+                                        if (diagnostics.recordSessionId(session.getSessionId())) {
                                             active = false;
                                             recovery.run();
                                             attempt.cancel();
                                         }
                                     });
+                            return CompletableFuture.completedFuture(Unit.VALUE);
+                        });
+            }
+            client.addSessionActivityListener(
+                    new org.eclipse.milo.opcua.sdk.client.SessionActivityListener() {
+                        @Override
+                        public void onSessionActive(
+                                org.eclipse.milo.opcua.sdk.client.UaSession session) {
+                            ifActive(() -> diagnostics.sessionActive(session.getSessionId()));
                         }
 
                         @Override
@@ -266,7 +272,18 @@ final class OpcConnection implements AutoCloseable {
         attempt.blocking(
                 () -> {
                     try {
-                        subscription.synchronizeMonitoredItems();
+                        while (true) {
+                            attempt.check();
+                            try {
+                                subscription.synchronizeMonitoredItems();
+                                return;
+                            } catch (CompletionException e) {
+                                if (!(e.getCause()
+                                        instanceof BoundedOpcUaClient.RejectedBatch batch)) throw e;
+                                // Milo retries only items that are still in their initial state.
+                                subscription.setMaxMonitoredItemsPerCall(uint(batch.nextSize));
+                            }
+                        }
                     } catch (MonitoredItemSynchronizationException e) {
                         // Milo stores the useful status in result lists, not in the cause chain.
                         for (var results :
@@ -291,8 +308,6 @@ final class OpcConnection implements AutoCloseable {
                                 }
                             }
                         }
-                        throw new CompletionException(e);
-                    } catch (Exception e) {
                         throw new CompletionException(e);
                     }
                 });

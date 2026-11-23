@@ -11,6 +11,8 @@ import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaSubscription;
 import org.eclipse.milo.opcua.stack.core.Identifiers;
 import org.eclipse.milo.opcua.stack.core.StatusCodes;
 import org.eclipse.milo.opcua.stack.core.UaException;
+import org.eclipse.milo.opcua.stack.core.UaServiceFaultException;
+import org.eclipse.milo.opcua.stack.core.channel.MessageAbortException;
 import org.eclipse.milo.opcua.stack.core.types.builtin.*;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.TimestampsToReturn;
 import org.eclipse.milo.opcua.stack.core.types.structured.*;
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -54,7 +57,16 @@ class MonitoredItemCreationTest {
                                     new CompletableFuture<>();
                             if (size > serverLimit) {
                                 onRejection.run();
-                                response.completeExceptionally(new UaException(rejectionStatus));
+                                ResponseHeader header =
+                                        new ResponseHeader(
+                                                DateTime.now(),
+                                                request.getRequestHeader().getRequestHandle(),
+                                                new StatusCode(rejectionStatus),
+                                                null,
+                                                new String[0],
+                                                null);
+                                response.completeExceptionally(
+                                        new UaServiceFaultException(new ServiceFault(header)));
                             } else {
                                 MonitoredItemCreateResult[] results =
                                         new MonitoredItemCreateResult[size];
@@ -176,8 +188,11 @@ class MonitoredItemCreationTest {
         assertEquals(Arrays.asList(100, 50, 50, 1), batchSizes());
     }
 
-    @Test
-    void shrinksStaleLimitWithoutRepeatingAcceptedChunksOrMisroutingValues() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {StatusCodes.Bad_TooManyOperations, StatusCodes.Bad_RequestTooLarge})
+    void shrinksStaleLimitWithoutRepeatingAcceptedChunksOrMisroutingValues(long status)
+            throws Exception {
+        rejectionStatus = status;
         serverLimit = 3;
         lowerLimitAfterItems = 3;
         advertise(new DataValue(new Variant(uint(3))));
@@ -206,8 +221,10 @@ class MonitoredItemCreationTest {
             assertEquals(tag.nodeId().toParseableString(), received.get(tag).getValue().getValue());
     }
 
-    @Test
-    void stopsWhenEvenOneItemExceedsTheLimit() {
+    @ParameterizedTest
+    @ValueSource(longs = {StatusCodes.Bad_TooManyOperations, StatusCodes.Bad_RequestTooLarge})
+    void stopsWhenEvenOneItemExceedsTheLimit(long status) {
+        rejectionStatus = status;
         serverLimit = 0;
         advertise(new DataValue(new Variant(uint(100))));
         Exception error =
@@ -221,17 +238,21 @@ class MonitoredItemCreationTest {
                                         (tag, value) -> {},
                                         new ConnectionAttempt(),
                                         1000));
-        assertEquals(
-                StatusCodes.Bad_TooManyOperations,
-                UaException.extractStatusCode(error).get().getValue());
+        assertEquals(status, UaException.extractStatusCode(error).get().getValue());
         assertEquals(Arrays.asList(3, 1), batchSizes());
         assertTrue(subscription.getMonitoredItems().isEmpty());
     }
 
-    @Test
-    void doesNotRetryOtherServiceFailures() {
+    @ParameterizedTest
+    @ValueSource(
+            longs = {
+                StatusCodes.Bad_UserAccessDenied,
+                StatusCodes.Bad_Timeout,
+                StatusCodes.Bad_ResponseTooLarge
+            })
+    void doesNotRetryOtherServiceFailures(long status) {
         serverLimit = 0;
-        rejectionStatus = StatusCodes.Bad_UserAccessDenied;
+        rejectionStatus = status;
         advertise(new DataValue(new Variant(uint(100))));
         Exception error =
                 assertThrows(
@@ -244,10 +265,31 @@ class MonitoredItemCreationTest {
                                         (tag, value) -> {},
                                         new ConnectionAttempt(),
                                         1000));
-        assertEquals(
-                StatusCodes.Bad_UserAccessDenied,
-                UaException.extractStatusCode(error).get().getValue());
+        assertEquals(status, UaException.extractStatusCode(error).get().getValue());
         assertEquals(Collections.singletonList(3), batchSizes());
+    }
+
+    @Test
+    void stopsAfterAChannelAbortWithARequestSizeStatus() {
+        MessageAbortException abort = mock(MessageAbortException.class);
+        when(abort.getStatusCode()).thenReturn(new StatusCode(StatusCodes.Bad_RequestTooLarge));
+        CompletableFuture<CreateMonitoredItemsResponse> failed = new CompletableFuture<>();
+        failed.completeExceptionally(abort);
+        doReturn(failed).when(client).sendRequest(any(CreateMonitoredItemsRequest.class));
+        advertise(new DataValue(new Variant(uint(100))));
+        ExecutionException error =
+                assertThrows(
+                        ExecutionException.class,
+                        () ->
+                                OpcConnection.createMonitoredItems(
+                                        client,
+                                        subscription,
+                                        tags(3),
+                                        (tag, value) -> {},
+                                        new ConnectionAttempt(),
+                                        1000));
+        assertSame(abort, error.getCause());
+        verify(client, times(1)).sendRequest(any(CreateMonitoredItemsRequest.class));
     }
 
     @Test
@@ -264,9 +306,10 @@ class MonitoredItemCreationTest {
         assertEquals(Collections.singletonList(3), batchSizes());
     }
 
-    @Test
-    void doesNotRetryPerItemFailuresAsAServiceRejection() {
-        itemStatus = new StatusCode(StatusCodes.Bad_TooManyOperations);
+    @ParameterizedTest
+    @ValueSource(longs = {StatusCodes.Bad_TooManyOperations, StatusCodes.Bad_RequestTooLarge})
+    void doesNotRetryPerItemFailuresAsAServiceRejection(long status) {
+        itemStatus = new StatusCode(status);
         advertise(new DataValue(new Variant(uint(100))));
         IllegalStateException error =
                 assertThrows(

@@ -11,6 +11,7 @@ import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.eclipse.milo.opcua.sdk.server.OpcUaServer;
 import org.eclipse.milo.opcua.sdk.server.api.config.OpcUaServerConfig;
 import org.eclipse.milo.opcua.sdk.server.identity.UsernameIdentityValidator;
+import org.eclipse.milo.opcua.stack.core.channel.EncodingLimits;
 import org.eclipse.milo.opcua.stack.core.security.*;
 import org.eclipse.milo.opcua.stack.core.types.builtin.*;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.*;
@@ -38,6 +39,7 @@ class SecureSubscriptionTest {
     KeyPair clientKey;
     String endpoint;
     boolean mixedUsernameTokens;
+    EncodingLimits encodingLimits = EncodingLimits.DEFAULT;
 
     @BeforeEach
     void startServer() throws Exception {
@@ -129,6 +131,7 @@ class SecureSubscriptionTest {
                                 .setApplicationUri("urn:test:server")
                                 .setApplicationName(LocalizedText.english("Test"))
                                 .setEndpoints(endpoints)
+                                .setEncodingLimits(encodingLimits)
                                 .setCertificateManager(
                                         new DefaultCertificateManager(serverKey, serverCert))
                                 .setCertificateValidator(

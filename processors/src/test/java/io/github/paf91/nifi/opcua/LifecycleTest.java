@@ -33,11 +33,66 @@ class LifecycleTest {
         }
 
         void value(ConnectionAttempt source, int value) {
-            source.ifActive(
-                    () ->
-                            acceptForTest(
-                                    TagDefinition.parse("tag", ProcessorTest.NODE, 100, 10),
-                                    new DataValue(new Variant(value))));
+            accept(
+                    source.destination,
+                    MemoryBoundsTest.TAG,
+                    new DataValue(new Variant(value)),
+                    source);
+        }
+    }
+
+    @Test
+    void emitsOnlyTheInitialValueFromTheSetupThatSucceeded() throws Exception {
+        List<ConnectionAttempt> attempts = new ArrayList<>();
+        ConsumeOPCUA processor =
+                new ConsumeOPCUA() {
+                    @Override
+                    protected AutoCloseable openConnection(
+                            ProcessContext context, ConnectionAttempt attempt) {
+                        attempts.add(attempt);
+                        accept(
+                                attempt.destination,
+                                MemoryBoundsTest.TAG,
+                                new DataValue(new Variant(attempts.size())),
+                                attempt);
+                        assertEquals(1, attempt.destination.size());
+                        Map<?, ?> activeBuffer =
+                                (Map<?, ?>) diagnosticSnapshot(context).get("buffer");
+                        assertEquals(0, activeBuffer.get("records"));
+                        if (attempts.size() == 1)
+                            throw new IllegalStateException("Later monitored item rejected");
+                        return () -> {};
+                    }
+                };
+        TestRunner runner = ProcessorTest.configured(processor);
+        try {
+            runner.run(1, false, true);
+            runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
+            ConnectionAttempt failed = attempts.get(0);
+            assertTrue(failed.isCancelled());
+            assertEquals(0, failed.destination.size());
+            assertEquals(0L, failed.destination.snapshot().get("bytes"));
+            processor.primaryChanged(PrimaryNodeState.ELECTED_PRIMARY_NODE);
+            runner.run(1, false, false);
+            processor.accept(
+                    failed.destination,
+                    MemoryBoundsTest.TAG,
+                    new DataValue(new Variant(99)),
+                    failed);
+            runner.run(1, false, false);
+            assertEquals(2, attempts.size());
+            runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 1);
+            com.fasterxml.jackson.databind.JsonNode batch =
+                    new com.fasterxml.jackson.databind.ObjectMapper()
+                            .readTree(
+                                    runner.getContentAsByteArray(
+                                            runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS)
+                                                    .get(0)));
+            assertEquals(1, batch.size());
+            assertEquals(2, batch.get(0).get("value").intValue());
+            assertEquals(0, failed.destination.size());
+        } finally {
+            runner.shutdown();
         }
     }
 

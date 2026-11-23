@@ -82,9 +82,8 @@ def build_targets(pom):
     for profile in root.findall('m:profiles/m:profile', NS):
         name = profile.findtext('m:id', namespaces=NS)
         if name in ('nifi1', 'nifi2'):
-            props = profile.find('m:properties', NS)
-            nifi = props.findtext('m:nifi.version', namespaces=NS)
-            java = props.findtext('m:maven.compiler.release', namespaces=NS)
+            nifi = root.findtext(f'm:properties/m:{name}.version', namespaces=NS)
+            java = root.findtext(f'm:properties/m:{name}.java', namespaces=NS)
             result.append({'profile': name, 'java': java, 'nifi': nifi,
                            'bytecode': str(int(java) + 44), 'artifact': f'nifi-opcua-{nifi}-{version}.nar'})
     if {t['profile'] for t in result} != {'nifi1', 'nifi2'}:
@@ -163,8 +162,7 @@ def main():
             with (dest / 'build.log').open('w') as log:
                 image_id = docker(target['java'], ['mvn', '-s', 'scripts/maven-ci-settings.xml', '-B', '-ntp', '-Dmaven.repo.local=/tmp/m2/repository',
                     '-DargLine=-Xms128m -Xmx1024m',
-                    '-Dproject.build.outputTimestamp=' + epoch, '-P' + target['profile'],
-                    '-Dnifi.version=' + target['nifi'], 'clean', 'verify'], log)
+                    '-Dproject.build.outputTimestamp=' + epoch, '-P' + target['profile'], 'clean', 'verify'], log)
             nar = source / 'nar/target' / target['artifact']
             run(['python3', source / 'scripts/verify-interop-tests.py',
                  source / 'processors/target/surefire-reports', '--profile', target['profile']], source)

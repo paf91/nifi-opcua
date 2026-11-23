@@ -6,11 +6,13 @@ An independent implementation can reveal assumptions hidden when the client and 
 
 ## Repeatable built-in tests
 
-Run `mvn -Pnifi1 clean verify` on JDK 8 and `mvn -Pnifi2 -Dnifi.version=2.12.0 clean verify` on JDK 21. `SecureSubscriptionTest` uses local temporary Milo servers and covers all 22 valid combinations of the six policies, three modes and two authentication types. It also tests a None channel with encrypted username tokens and trusted, missing or untrusted PKI, and rejects an incorrect password without channel encryption. These tests require permission to bind loopback ports. The normal CI build includes them.
+Run `mvn -Pnifi1 clean verify` on JDK 8 and `mvn -Pnifi2 clean verify` on JDK 21. `SecureSubscriptionTest` uses local temporary Milo servers and covers all 22 valid combinations of the six policies, three modes and two authentication types. It also tests a None channel with encrypted username tokens and trusted, missing or untrusted PKI, and rejects an incorrect password without channel encryption. These tests require permission to bind loopback ports. The normal CI build includes them.
 
 `ServerCertificateValidationTest` runs the Full/Certificate/None matrix against generated server identities on secured channels and on None channels with encrypted username tokens. It covers hostname and URI mismatches, expiry, usage/signature failures, missing/untrusted/unusable PKI, and continued rejection of bad credentials/client identities. `ServerCertificateChecksTest` exercises real certificate validation without network sockets, including CA-signed chains with valid, missing and revoked CRLs. Both are part of each profile's normal build.
 
 Socket-free tests check all 36 combinations, reject incompatible policy/mode pairs, validate real username-token encryption and server trust, preserve buffered security attributes, load PEM/DER keys, and decode binary OPC UA matrices into JSON.
+
+`SubscriptionTransferTest` checks the first delivered value after the server transfers the original subscription to a replacement session. It closes outstanding Publish requests from the old session before queuing a marker. A numeric tag without cached metadata receives that marker. With `dataType` selected, the processor rebuilds the connection and delivers a fresh reading with the new type.
 
 The two adapters have different endpoint-consistency coverage. Modern Milo 1 compares the discovery endpoint list with the endpoints returned by CreateSession. Legacy Milo 0.6 lacks that comparison, including on SignAndEncrypt channels. Certificate validation and applicable signatures still apply but do not add the missing comparison. Include this limitation when accepting a legacy deployment.
 
@@ -31,7 +33,7 @@ mvn -Pnifi1 clean verify
 python3 scripts/verify-interop-tests.py processors/target/surefire-reports --profile nifi1
 ```
 
-Use a Linux runtime compatible with the Ubuntu 22.04 test binary, or run Maven in the same Temurin Docker images as CI, mounting the repository at `/work` and setting `OPCUA_OPEN62541_BINARY=/work/dist/open62541/open62541`. Switch to Java 21 and `-Pnifi2 -Dnifi.version=2.12.0` for the modern adapter, then check its reports with `--profile nifi2`. Rebuild and copy out the fixture after changing `tests/interop/open62541.c`; an old cached executable does not cover those changes.
+Use a Linux runtime compatible with the Ubuntu 22.04 test binary, or run Maven in the same Temurin Docker images as CI, mounting the repository at `/work` and setting `OPCUA_OPEN62541_BINARY=/work/dist/open62541/open62541`. Switch to Java 21 and `-Pnifi2` for the modern adapter, then check its reports with `--profile nifi2`. Rebuild and copy out the fixture after changing `tests/interop/open62541.c`; an old cached executable does not cover those changes.
 
 `Open62541Test` and `Open62541RecoveryTest` are required for both profiles, with `Open62541SetupTest` also required for the modern profile. They are skipped locally when `OPCUA_OPEN62541_BINARY` is unset; do not count a skip as independent-server coverage. GitHub CI, GitLab CI and `scripts/release.py` require every profile-specific suite to execute without skips. Server logs are retained under `processors/target/interop-logs/`. The fixture also exercises a missing operation-limit property, quiet keep-alives and a server that temporarily stops responding while keeping TCP open. The tests use isolated local endpoints and never contact your configured production server.
 
@@ -54,7 +56,7 @@ For secured channels, set `OPCUA_TEST_POLICY` and `OPCUA_TEST_MODE` to the adver
 
 `OPCUA_TEST_SERVER_VALIDATION` defaults to `Full`; set it to `Certificate` to test a known hostname/IP mismatch, or `None` for an explicit insecure test. None makes the test's PKI directory optional; it still requires client identity files on secured channels. Use an authorized test endpoint and test credentials.
 
-Repeat on JDK 21 with `-Pnifi2 -Dnifi.version=2.12.0`; clean the build when switching profiles. The external test creates a subscription, requires a Good initial notification, closes it, and reconnects for a second subscription. It is skipped unless `OPCUA_TEST_ENDPOINT` is set. It does not start or reconfigure the external server.
+Repeat on JDK 21 with `-Pnifi2`; clean the build when switching profiles. The external test creates a subscription, requires a Good initial notification, closes it, and reconnects for a second subscription. It is skipped unless `OPCUA_TEST_ENDPOINT` is set. It does not start or reconfigure the external server.
 
 ## Focused acceptance matrix
 

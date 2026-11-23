@@ -15,6 +15,8 @@ Development build:
 | NiFi 1.23.2 / Java 8 | `nifi-opcua-1.23.2-1.0.5-SNAPSHOT.nar` |
 | NiFi 2.12.0 / Java 21 | `nifi-opcua-2.12.0-1.0.5-SNAPSHOT.nar` |
 
+When obtaining a NAR from a Maven repository, select the artifact ID for the NiFi target. Both files report the same runtime `Nar-Id` to NiFi. [Maven artifacts](development.md#maven-artifacts)
+
 Released version 1.0.4:
 
 | Target | Artifact |
@@ -63,9 +65,9 @@ These mechanisms are documented in the [NiFi 1.23.2 administration guide](https:
 
 The move from `SubscribeOpcUa` to `ConsumeOPCUA` changes both the stored processor type and the bundle artifact. Follow the [processor migration](namespace-migration.md), which recreates processors and connections. **Change version** does not perform this migration, even when the old and new builds both use version `1.0.5-SNAPSHOT`.
 
-For an installed `ConsumeOPCUA`, use **Change version** only for a target with the same processor type, Maven group and artifact. Stop and drain in-memory notifications before changing versions, or explicitly accept their loss. Back up the flow and installed NAR, deploy the target to every cluster node, check properties and relationships, run Verify, and confirm fresh data after starting.
+For an installed `ConsumeOPCUA`, use **Change version** only for a target with the same processor type and NiFi runtime bundle group and artifact ID. Stop and drain in-memory notifications before changing versions, or explicitly accept their loss. Back up the flow and installed NAR, deploy the target to every cluster node, check properties and relationships, run Verify, and confirm fresh data after starting.
 
-When upgrading an earlier development build, review the [password-protection migration checks](configuration.md#password-protection-migration) before Verify or Start. Sign channels with plaintext username tokens now fail by default. None channels offering both encrypted and unencrypted tokens select encryption and require server trust with Full or Certificate validation.
+When upgrading an earlier development build, check Sign channels that offer only plaintext username tokens. The default password-protection setting rejects those tokens. On None/None, a supported encrypted token takes priority across all matching endpoints and requires server trust under Full or Certificate validation. [Password-protection migration checks](configuration.md#password-protection-migration)
 
 ### Upgrading the earlier processor to release 1.0.4
 

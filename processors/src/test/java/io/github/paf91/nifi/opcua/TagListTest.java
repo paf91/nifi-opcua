@@ -14,6 +14,20 @@ class TagListTest {
     }
 
     @Test
+    void keepsSyntacticPaddingCompatibleInBareJsonNodeIds() {
+        for (String id :
+                Arrays.asList(
+                        "ns=2;i=7", "ns=2;g=d8585bef-1dc2-4cc2-a021-355d030c9f00", "ns=2;b=AQID")) {
+            TagDefinition padded = parse("[\" " + id + "  \"]").get(0);
+            assertEquals(id, padded.alias());
+            assertEquals(parse("[\"" + id + "\"]").get(0).nodeId(), padded.nodeId());
+        }
+        TagDefinition tag = parse("[\" ns=2;s=Pump A \"]").get(0);
+        assertEquals("Pump A ", tag.nodeId().getIdentifier());
+        assertEquals("ns=2;s=Pump A ", tag.alias());
+    }
+
+    @Test
     void acceptsPastedLinesCommentsAliasesAndWindowsNewlines() {
         List<TagDefinition> tags =
                 parse(
@@ -56,6 +70,30 @@ class TagListTest {
         assertEquals(50, tags.get(1).queueSize());
         assertFalse(tags.get(1).discardOldest());
         assertEquals("ns=2;s=Example.Pump.Running", tags.get(2).alias());
+    }
+
+    @Test
+    void bothJsonFormsPreserveTrailingSpacesInStringIdentifiers() {
+        String padded = "ns=2;s=Pump A ";
+        String unpadded = "ns=2;s=Pump A";
+        List<TagDefinition> tags =
+                parse("[\"" + padded + "\",{\"alias\":\"other\",\"nodeId\":\"" + unpadded + "\"}]");
+        assertEquals("Pump A ", tags.get(0).nodeId().getIdentifier());
+        assertEquals("Pump A", tags.get(1).nodeId().getIdentifier());
+        assertEquals(
+                tags.get(0).nodeId(), parse("[{\"nodeId\":\"" + padded + "\"}]").get(0).nodeId());
+        assertTrue(
+                assertThrows(
+                                IllegalArgumentException.class,
+                                () ->
+                                        parse(
+                                                "[\""
+                                                        + padded
+                                                        + "\",{\"alias\":\"other\",\"nodeId\":\""
+                                                        + padded
+                                                        + "\"}]"))
+                        .getMessage()
+                        .contains("Duplicate NodeId"));
     }
 
     @Test

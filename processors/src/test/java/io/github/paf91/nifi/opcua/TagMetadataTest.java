@@ -11,12 +11,15 @@ import org.eclipse.milo.opcua.stack.core.types.builtin.*;
 import org.eclipse.milo.opcua.stack.core.types.structured.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 @Timeout(15)
 class TagMetadataTest {
@@ -83,9 +86,9 @@ class TagMetadataTest {
                 attempt, timeout, read, translate, new NamespaceTable(), extension -> UNITS);
     }
 
-    private static <T> CompletableFuture<T> failure(long status) {
+    private static <T> CompletableFuture<T> failure(Exception error) {
         CompletableFuture<T> future = new CompletableFuture<>();
-        future.completeExceptionally(new UaException(status));
+        future.completeExceptionally(error);
         return future;
     }
 
@@ -260,29 +263,157 @@ class TagMetadataTest {
         assertEquals(field.equals("dataType") ? 0 : 1, browses.get());
     }
 
-    @Test
-    void adaptsToUnadvertisedServerOperationLimits() throws Exception {
-        AtomicInteger attempts = new AtomicInteger();
+    static Stream<Exception> sizeRejections() {
+        return Stream.of(
+                new UaException(StatusCodes.Bad_TooManyOperations),
+                new UaException(StatusCodes.Bad_RequestTooLarge),
+                new UaException(StatusCodes.Bad_ResponseTooLarge),
+                new UaSerializationException(
+                        StatusCodes.Bad_RequestTooLarge,
+                        "request exceeds remote max message size"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("sizeRejections")
+    void retriesHalfTheRejectedMetadataRequest(Exception rejection) throws Exception {
+        List<Integer> reads = new ArrayList<>(), browses = new ArrayList<>();
+        ConnectionDiagnostics report = new ConnectionDiagnostics();
         List<TagDefinition> resolved =
                 reader(
                                 new ConnectionAttempt(),
                                 2000,
                                 requests -> {
-                                    attempts.incrementAndGet();
+                                    reads.add(requests.size());
                                     return requests.size() > 2
-                                            ? failure(StatusCodes.Bad_TooManyOperations)
+                                            ? failure(rejection)
                                             : read(requests);
                                 },
-                                paths ->
-                                        paths.size() > 2
-                                                ? failure(StatusCodes.Bad_TooManyOperations)
-                                                : translate(paths))
-                        .load(tags(5), OUTPUT, new ConnectionDiagnostics());
-        assertTrue(attempts.get() > 4);
+                                paths -> {
+                                    browses.add(paths.size());
+                                    return paths.size() > 2 ? failure(rejection) : translate(paths);
+                                })
+                        .load(tags(5), OUTPUT, report);
+        assertAll(
+                () -> assertEquals(Arrays.asList(5, 2, 2, 1), browses),
+                () -> assertEquals(Arrays.asList(5, 2, 2, 1, 5, 2, 2, 1), reads));
+        assertNull(((Map<?, ?>) report.snapshot().get("tagMetadata")).get("failure"));
+        assertEquals(5, resolved.size());
+        ObjectMapper json = new ObjectMapper();
         for (TagDefinition tag : resolved) {
-            assertNotNull(tag.metadata().dataType);
-            assertTrue(tag.metadata().hasUnits());
+            JsonNode record =
+                    json.readTree(
+                            NotificationJson.encode(
+                                    tag, new DataValue(new Variant(1)), 4096, OUTPUT));
+            assertEquals(Identifiers.Double.toParseableString(), record.get("dataType").asText());
+            JsonNode units = record.get("engineeringUnits");
+            assertEquals(UNITS.getNamespaceUri(), units.get("namespaceUri").asText());
+            assertEquals(UNITS.getUnitId().intValue(), units.get("unitId").intValue());
+            assertEquals(UNITS.getDisplayName().getText(), units.get("displayName").asText());
+            assertEquals(UNITS.getDescription().getText(), units.get("description").asText());
         }
+    }
+
+    @ParameterizedTest
+    @MethodSource("sizeRejections")
+    void doesNotRepeatAnIndivisibleRejectedRead(Exception rejection) throws Exception {
+        List<Integer> sizes = new ArrayList<>();
+        List<TagDefinition> resolved =
+                reader(
+                                new ConnectionAttempt(),
+                                2000,
+                                requests -> {
+                                    sizes.add(requests.size());
+                                    return failure(rejection);
+                                },
+                                TagMetadataTest::translate)
+                        .load(tags(1), OUTPUT, new ConnectionDiagnostics());
+        assertEquals(Collections.singletonList(1), sizes);
+        assertNull(resolved.get(0).metadata().dataType);
+    }
+
+    static Stream<Arguments> otherReadFailures() {
+        return Stream.of(
+                Arguments.of(
+                        new UaSerializationException(
+                                StatusCodes.Bad_EncodingError, "encoding details"),
+                        "ExecutionException(Bad_EncodingError)"),
+                Arguments.of(
+                        new UaSerializationException(0xffff0000L, "unknown status details"),
+                        "ExecutionException"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("otherReadFailures")
+    void doesNotSplitAReadForOtherStatuses(Exception rejection, String expectedFailure)
+            throws Exception {
+        List<Integer> sizes = new ArrayList<>();
+        ConnectionDiagnostics report = new ConnectionDiagnostics();
+        List<TagDefinition> resolved =
+                reader(
+                                new ConnectionAttempt(),
+                                2000,
+                                requests -> {
+                                    sizes.add(requests.size());
+                                    return failure(rejection);
+                                },
+                                TagMetadataTest::translate)
+                        .load(tags(5), OUTPUT, report);
+        assertEquals(Collections.singletonList(5), sizes);
+        assertEquals(
+                expectedFailure, ((Map<?, ?>) report.snapshot().get("tagMetadata")).get("failure"));
+        for (TagDefinition tag : resolved) assertNull(tag.metadata().dataType);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void readsShortUnitsThroughProtocolSizedPropertyIdentifiers(boolean opaque) throws Exception {
+        String character = "\uD83C\uDF21";
+        String atLimit = String.join("", Collections.nCopies(4096, character));
+        NodeId valid =
+                opaque ? new NodeId(2, new ByteString(new byte[4096])) : new NodeId(2, atLimit);
+        NodeId tooLong =
+                opaque
+                        ? new NodeId(2, new ByteString(new byte[4097]))
+                        : new NodeId(2, atLimit + character);
+        List<NodeId> reads = new ArrayList<>();
+        List<TagDefinition> resolved =
+                reader(
+                                new ConnectionAttempt(),
+                                2000,
+                                requests -> {
+                                    for (ReadValueId request : requests)
+                                        reads.add(request.getNodeId());
+                                    return read(requests);
+                                },
+                                paths -> {
+                                    BrowsePathResult[] results = new BrowsePathResult[2];
+                                    for (int i = 0; i < results.length; i++) {
+                                        NodeId id = i == 0 ? valid : tooLong;
+                                        results[i] =
+                                                new BrowsePathResult(
+                                                        StatusCode.GOOD,
+                                                        new BrowsePathTarget[] {
+                                                            new BrowsePathTarget(
+                                                                    id.expanded(),
+                                                                    uint(0xffffffffL))
+                                                        });
+                                    }
+                                    return CompletableFuture.completedFuture(
+                                            new TranslateBrowsePathsToNodeIdsResponse(
+                                                    null, results, null));
+                                })
+                        .load(
+                                tags(2),
+                                OutputOptionsTest.output(
+                                        "tag,value,engineeringUnits",
+                                        "JSON Array",
+                                        "ISO-8601",
+                                        false,
+                                        0),
+                                new ConnectionDiagnostics());
+        assertEquals(Collections.singletonList(valid), reads);
+        assertTrue(resolved.get(0).metadata().hasUnits());
+        assertFalse(resolved.get(1).metadata().hasUnits());
     }
 
     @Test

@@ -386,6 +386,78 @@ class GracefulStopTest {
     }
 
     @Test
+    void lateStopAcknowledgementCannotStrandIngressInTheRetainedBuffer() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.runner.setProperty(ConsumeOPCUA.STOP_DRAIN_TIMEOUT, "100");
+            ConnectionAttempt old = f.processor.generation;
+            f.processor.value(old, 1);
+            AtomicReference<Runnable> acknowledge = new AtomicReference<>();
+            f.decorate =
+                    session -> {
+                        ProcessSession pending = spy(session);
+                        doAnswer(
+                                        call -> {
+                                            Runnable committed = call.getArgument(0);
+                                            acknowledge.set(
+                                                    () -> {
+                                                        pending.commitAsync();
+                                                        committed.run();
+                                                    });
+                                            return null;
+                                        })
+                                .when(pending)
+                                .commitAsync(any(Runnable.class), any());
+                        return pending;
+                    };
+            f.processor.stop();
+            await(() -> f.workers() == 0);
+            assertNotNull(acknowledge.get());
+            assertEquals(true, f.buffer().get("reserved"));
+            f.decorate = UnaryOperator.identity();
+            f.runner.setProperty(ConsumeOPCUA.ENDPOINT, "opc.tcp://new-source:4840");
+            f.processor.start(f.runner.getProcessContext());
+
+            // Let the final acknowledgement arrive just after Start's trigger has observed
+            // one retained entry. The following queue snapshot will see an empty buffer.
+            java.lang.reflect.Field queue = NotificationBuffer.class.getDeclaredField("queue");
+            queue.setAccessible(true);
+            ArrayDeque<?> entries = (ArrayDeque<?>) queue.get(old.destination);
+            queue.set(
+                    old.destination,
+                    new ArrayDeque<Object>(entries) {
+                        @Override
+                        public int size() {
+                            int observed = super.size();
+                            Runnable callback = acknowledge.getAndSet(null);
+                            if (callback != null) callback.run();
+                            return observed;
+                        }
+                    });
+            f.trigger();
+            assertNull(acknowledge.get());
+            assertEquals(1, f.processor.opened);
+            f.trigger();
+            assertEquals(2, f.processor.opened);
+            ConnectionAttempt fresh = f.processor.generation;
+            assertNotSame(old.destination, fresh.destination);
+            f.processor.value(old, 99);
+            f.processor.value(fresh, 2);
+            f.trigger();
+            f.runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 2);
+            List<MockFlowFile> flows = f.runner.getFlowFilesForRelationship(ConsumeOPCUA.SUCCESS);
+            flows.get(0).assertAttributeEquals("opcua.endpoint", "opc.tcp://localhost:4840");
+            flows.get(1).assertAttributeEquals("opcua.endpoint", "opc.tcp://new-source:4840");
+            ObjectMapper json = new ObjectMapper();
+            for (int i = 0; i < flows.size(); i++) {
+                com.fasterxml.jackson.databind.JsonNode batch =
+                        json.readTree(f.runner.getContentAsByteArray(flows.get(i)));
+                assertEquals(1, batch.size());
+                assertEquals(i + 1, batch.get(0).get("value").intValue());
+            }
+        }
+    }
+
+    @Test
     void emptyOrNeverTriggeredProcessorStopsWithoutCreatingDrainWorkers() throws Exception {
         ConsumeOPCUA processor = new ProcessorTest.OfflineProcessor();
         TestRunner runner = ProcessorTest.configured(processor);

@@ -2,55 +2,37 @@
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>io.github.paf91.nifi</groupId>
-    <artifactId>nifi-opcua-bundle</artifactId>
+    <artifactId>nifi-opcua-nar-parent</artifactId>
     <version>1.0.5-SNAPSHOT</version>
+    <relativePath>parent/pom.xml</relativePath>
   </parent>
   <artifactId>nifi-opcua-nar</artifactId>
   <packaging>nar</packaging>
+  <name>OPC UA NAR for NiFi 1</name>
+  <properties>
+    <processor.artifactId>nifi-opcua-processors</processor.artifactId>
+  </properties>
   <dependencies>
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-      <version>2.0.17</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.nifi</groupId>
-      <artifactId>nifi-api</artifactId>
-      <version>${nifi.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.github.paf91.nifi</groupId>
-      <artifactId>nifi-opcua-processors</artifactId>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>${processor.artifactId}</artifactId>
       <version>${project.version}</version>
     </dependency>
   </dependencies>
   <build>
-    <finalName>nifi-opcua-${nifi.version}-${project.version}</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-maven-plugin</artifactId>
-        <version>${nar.plugin.version}</version>
-        <configuration>
-          <enforceDocGeneration>true</enforceDocGeneration>
-        </configuration>
         <extensions>true</extensions>
       </plugin>
+      <plugin>
+        <artifactId>maven-dependency-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+      </plugin>
     </plugins>
-    <resources>
-      <resource>
-        <directory>src/main/resources</directory>
-      </resource>
-      <resource>
-        <directory>${project.basedir}/..</directory>
-        <targetPath>META-INF</targetPath>
-        <includes>
-          <include>LICENSE</include>
-          <include>THIRD-PARTY-NOTICES.md</include>
-        </includes>
-      </resource>
-    </resources>
   </build>
 </project>

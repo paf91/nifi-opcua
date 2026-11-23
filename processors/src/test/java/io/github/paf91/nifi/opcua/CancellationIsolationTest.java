@@ -87,14 +87,26 @@ class CancellationIsolationTest {
     void aConnectionReturningAfterCancellationIsClosedWithoutBeingPublished() throws Exception {
         CountDownLatch opening = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicInteger closed = new AtomicInteger();
+        AtomicReference<ConnectionAttempt> openingAttempt = new AtomicReference<>();
         ConsumeOPCUA processor =
                 new ConsumeOPCUA() {
                     @Override
                     protected AutoCloseable openConnection(
                             ProcessContext context, ConnectionAttempt generation) throws Exception {
+                        openingAttempt.set(generation);
+                        accept(
+                                generation.destination,
+                                MemoryBoundsTest.TAG,
+                                new DataValue(new Variant(1)),
+                                generation);
                         opening.countDown();
                         assertTrue(release.await(10, TimeUnit.SECONDS));
                         // Simulate a connection opener finishing after cancellation.
+                        accept(
+                                generation.destination,
+                                MemoryBoundsTest.TAG,
+                                new DataValue(new Variant(2)),
+                                generation);
                         return closed::incrementAndGet;
                     }
                 };
@@ -109,11 +121,15 @@ class CancellationIsolationTest {
                                         runner.getProcessSessionFactory().createSession()));
         try {
             assertTrue(opening.await(3, TimeUnit.SECONDS));
+            assertEquals(1, openingAttempt.get().destination.size());
             workers.submit(processor::unscheduled).get(2, TimeUnit.SECONDS);
             assertFalse(trigger.isDone());
+            assertEquals(0, openingAttempt.get().destination.size());
             release.countDown();
             trigger.get(3, TimeUnit.SECONDS);
             assertEquals(1, closed.get());
+            assertEquals(0, openingAttempt.get().destination.size());
+            runner.assertTransferCount(ConsumeOPCUA.SUCCESS, 0);
             assertEquals(
                     0L,
                     processor

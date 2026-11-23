@@ -223,23 +223,40 @@ class Harness:
               method=method, data=None if body is None else json.dumps(body).encode(),
               headers={'Content-Type': 'application/json'})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as res:
+            with urllib.request.urlopen(req, timeout=self.request_timeout(timeout)) as res:
                 data = res.read()
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as e:
             raise RuntimeError(f'{method} {path}: {e.code} {e.read().decode()[:1500]}') from None
 
+    def request_timeout(self, timeout):
+        deadline = getattr(self, '_wait_deadline', None)
+        if deadline is None:
+            return timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('The polling deadline expired before the request')
+        return min(timeout, remaining)
+
     def wait(self, description, fn, timeout=180):
         started = time.monotonic()
-        end = started + timeout
+        outer = getattr(self, '_wait_deadline', None)
+        end = min(started + timeout, outer) if outer is not None else started + timeout
+        self._wait_deadline = end
+        try:
+            return self._poll(description, fn, timeout, started, end)
+        finally:
+            self._wait_deadline = outer
+
+    def _poll(self, description, fn, timeout, started, end):
         next_update = started
         last = None
         while time.monotonic() < end:
             try:
                 result = fn()
-                if result:
+                if result and time.monotonic() < end:
                     return result
-                last = repr(result)
+                last = 'The observation arrived after the deadline' if result else repr(result)
             except (OSError, ValueError, RuntimeError) as e:
                 last = str(e)
             now = time.monotonic()
@@ -337,7 +354,8 @@ class Harness:
             {'revision': {'version': 0}, 'component': {'name': 'acceptance',
              'source': {'id': self.source, 'groupId': self.gid, 'type': 'PROCESSOR'},
              'destination': {'id': self.sink, 'groupId': self.gid, 'type': 'PROCESSOR'},
-             'selectedRelationships': ['success'], 'backPressureObjectThreshold': 10,
+             'selectedRelationships': ['success'], 'loadBalanceStrategy': 'DO_NOT_LOAD_BALANCE',
+             'backPressureObjectThreshold': 10,
              'backPressureDataSizeThreshold': '10 MB'}})
         self.connection = conn['id']
         for processor in [self.source, self.sink]:
@@ -377,7 +395,7 @@ class Harness:
         query = ('?clusterNodeId=' + row['clusterNodeId']) if row.get('clusterNodeId') else ''
         request = urllib.request.Request('http://127.0.0.1:' + self.ports[self.node] + '/nifi-api'
                   + base + '/flowfiles/' + row['uuid'] + '/content' + query)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=self.request_timeout(timeout)) as response:
             content = response.read(CONTENT_BYTE_LIMIT + 1)
         assert len(content) < CONTENT_BYTE_LIMIT, 'Content reached the byte cap'
         records = json.loads(content)
@@ -755,17 +773,69 @@ class Harness:
             self.check(name, detail)
         return detail
 
+    def cluster_ownership(self):
+        connected = self.connected()
+        nodes = {node['nodeId']: node['address'] for node in connected}
+        assert (len(connected) == len(nodes) == len(self.nodes) and all(nodes)
+                and set(nodes.values()) == set(self.nodes)), 'Incomplete cluster membership'
+        primary = [node['nodeId'] for node in connected if 'Primary Node' in node.get('roles', [])]
+        assert len(primary) == 1, 'Expected one primary node'
+        return nodes, primary[0]
+
+    def queued_owners(self, nodes):
+        base = '/flowfile-queues/' + self.connection
+        lid = self.api(self.node, 'POST', base + '/listing-requests')['listingRequest']['id']
+        try:
+            listing = self.wait('cluster queue listing', lambda: self._listing(base, lid), 30)
+            assert not listing.get('failureReason'), 'Cluster queue listing failed'
+            rows = listing.get('flowFileSummaries') or []
+            owners = {row['uuid']: row['clusterNodeId'] for row in rows}
+            # NiFi snapshots the count before collecting rows. Only appends can occur here.
+            count_at_request = listing['queueSize']['objectCount']
+            assert (type(count_at_request) is int and 0 <= count_at_request <= len(rows) < 100
+                    and len(owners) == len(rows) and all(owners)), 'Incomplete cluster queue listing'
+            assert all(node in nodes for node in owners.values()), 'Unknown node in cluster queue listing'
+            return owners
+        finally:
+            self.api(self.node, 'DELETE', base + '/listing-requests/' + lid)
+
     def primary_ownership(self):
-        primary = next(n['address'] for n in self.connected() if 'Primary Node' in n.get('roles', []))
-        before = self.snapshot('ownership-before')['processor']['nodeSnapshots']
-        time.sleep(5)
-        after = self.snapshot('ownership-after')['processor']['nodeSnapshots']
-        prior = {n['address']: n['statusSnapshot']['flowFilesOut'] for n in before}
-        delta = {n['address']: n['statusSnapshot']['flowFilesOut'] - prior[n['address']] for n in after}
-        assert delta[primary] > 0, 'Primary did not emit data'
-        assert all(v == 0 for k, v in delta.items() if k != primary), 'Non-primary emitted data'
-        assert self.metrics()['subscriptions'] == 1, 'More than one subscription'
-        self.check('primary-only-delivery', {'primary': primary, 'flowFileDelta': delta})
+        connection = self.api(self.node, 'GET', '/connections/' + self.connection)['component']
+        assert connection.get('loadBalanceStrategy') == 'DO_NOT_LOAD_BALANCE', 'Queue must keep FlowFiles on their producer node'
+        original = {key: connection[key] for key in ('backPressureObjectThreshold', 'backPressureDataSizeThreshold')}
+        self.wait('drain before checking primary ownership', lambda: self.queue_count_now() == 0, 120)
+        self.state(self.sink, 'STOPPED')
+        restore_limits = False
+        try:
+            self.wait('sink stopped for ownership check', lambda: self.stopped(self.sink), 30)
+            nodes, primary = self.cluster_ownership()
+            server = self.metrics()
+            assert server['subscriptions'] == 1, 'Expected one active subscription before observation'
+            before = self.queued_owners(nodes)
+            # A fast primary may already have filled the 10-FlowFile / 10 MB test queue.
+            # Leave room for new UUIDs on each node while keeping the listing below 100 rows.
+            restore_limits = True
+            self.connection_settings({'backPressureObjectThreshold': 32, 'backPressureDataSizeThreshold': '64 MB'})
+            time.sleep(5)
+            after = self.queued_owners(nodes)
+            assert self.stopped(self.sink), 'Sink restarted during ownership check'
+            assert self.cluster_ownership() == (nodes, primary), 'Cluster ownership changed during observation'
+            assert before.items() <= after.items(), 'Queued FlowFiles moved or disappeared during observation'
+            counts = {address: 0 for address in nodes.values()}
+            for uuid in after.keys() - before.keys():
+                counts[nodes[after[uuid]]] += 1
+            assert counts[nodes[primary]] > 0, 'Primary did not emit fresh FlowFiles'
+            assert not any(counts[nodes[node]] for node in nodes if node != primary), 'Non-primary emitted fresh FlowFiles'
+            latest = self.metrics()
+            assert latest['tick'] > server['tick'], 'OPC UA server metrics did not advance during observation'
+            assert latest['subscriptions'] == 1, 'Expected one active subscription'
+        finally:
+            try:
+                if restore_limits:
+                    self.connection_settings(original)
+            finally:
+                self.state(self.sink, 'RUNNING')
+        self.check('primary-only-delivery', {'primary': nodes[primary], 'freshFlowFiles': counts})
 
     def failover(self):
         self.primary_ownership()

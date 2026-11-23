@@ -70,6 +70,20 @@ class DiagnosticsTest {
     }
 
     @Test
+    void sessionInitializationDistinguishesReactivationWithoutCountingAnotherActivation() {
+        ConnectionDiagnostics report = new ConnectionDiagnostics();
+        assertFalse(report.recordSessionId(new NodeId(1, "first")));
+        assertFalse(report.sessionActive(new NodeId(1, "first")));
+        report.sessionInactive();
+        assertFalse(report.recordSessionId(new NodeId(1, "first")));
+        assertEquals(false, report.snapshot().get("settingsMayBeStale"));
+        assertTrue(report.recordSessionId(new NodeId(1, "replacement")));
+        assertEquals(true, report.snapshot().get("settingsMayBeStale"));
+        assertEquals(false, report.snapshot().get("sessionActive"));
+        assertEquals(1, report.snapshot().get("sessionActivations"));
+    }
+
+    @Test
     void boundsMetadataAndRemovesEndpointCredentialsBeforeRendering() {
         ConnectionDiagnostics report =
                 new ConnectionDiagnostics(value -> value.replace("very\nsecret", "[redacted]"));

@@ -1,18 +1,32 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" child.project.url.inherit.append.path="false">
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.paf91.nifi</groupId>
   <artifactId>nifi-opcua-bundle</artifactId>
   <version>1.0.5-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>NiFi OPC UA Bundle</name>
+  <description>Secure OPC UA data-change subscriptions for Apache NiFi.</description>
+  <url>https://github.com/paf91/nifi-opcua</url>
+  <scm child.scm.connection.inherit.append.path="false" child.scm.developerConnection.inherit.append.path="false" child.scm.url.inherit.append.path="false">
+    <connection>scm:git:https://github.com/paf91/nifi-opcua.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/paf91/nifi-opcua.git</developerConnection>
+    <url>https://github.com/paf91/nifi-opcua</url>
+  </scm>
+  <developers>
+    <developer>
+      <id>paf91</id>
+      <name>paf91</name>
+      <url>https://github.com/paf91</url>
+    </developer>
+  </developers>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <nifi.version>1.23.2</nifi.version>
-    <maven.compiler.release>8</maven.compiler.release>
-    <milo.version>0.6.16</milo.version>
-    <milo.artifact.prefix />
-    <milo.source>milo06</milo.source>
-    <nar.plugin.version>1.5.1</nar.plugin.version>
+    <nifi1.version>1.23.2</nifi1.version>
+    <nifi1.java>8</nifi1.java>
+    <nifi2.version>2.12.0</nifi2.version>
+    <nifi2.java>21</nifi2.java>
+    <nifi.version>${nifi1.version}</nifi.version>
+    <maven.compiler.release>${nifi1.java}</maven.compiler.release>
     <junit.version>5.11.4</junit.version>
     <netty.version>4.1.139.Final</netty.version>
     <jackson.version>2.18.12</jackson.version>
@@ -20,8 +34,8 @@
     <guava.version>33.8.0-jre</guava.version>
   </properties>
   <modules>
-    <module>processors</module>
-    <module>nar</module>
+    <module>processors/parent</module>
+    <module>nar/parent</module>
   </modules>
   <dependencyManagement>
     <dependencies>
@@ -76,7 +90,33 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.17</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.nifi</groupId>
+      <artifactId>nifi-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <resource>
+        <directory>${project.basedir}/..</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>LICENSE</include>
+          <include>THIRD-PARTY-NOTICES.md</include>
+        </includes>
+      </resource>
+    </resources>
     <pluginManagement>
       <plugins>
         <plugin>
@@ -102,30 +142,55 @@
           <artifactId>maven-jar-plugin</artifactId>
           <version>3.4.2</version>
         </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-install-plugin</artifactId>
+          <version>3.1.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>flatten-maven-plugin</artifactId>
+          <version>1.9.0</version>
+          <configuration>
+            <flattenMode>ossrh</flattenMode>
+            <flattenDependencyMode>all</flattenDependencyMode>
+            <outputDirectory>${project.build.directory}</outputDirectory>
+            <pomElements>
+              <dependencyManagement>expand</dependencyManagement>
+              <profiles>remove</profiles>
+            </pomElements>
+          </configuration>
+          <executions>
+            <execution>
+              <id>consumer-pom</id>
+              <phase>process-resources</phase>
+              <goals><goal>flatten</goal></goals>
+            </execution>
+          </executions>
+        </plugin>
       </plugins>
     </pluginManagement>
   </build>
   <profiles>
     <profile>
       <id>nifi1</id>
-      <properties>
-        <nifi.version>1.23.2</nifi.version>
-        <maven.compiler.release>8</maven.compiler.release>
-        <milo.version>0.6.16</milo.version>
-        <milo.artifact.prefix />
-        <milo.source>milo06</milo.source>
-      </properties>
+      <activation><activeByDefault>true</activeByDefault></activation>
+      <modules>
+        <module>processors</module>
+        <module>nar</module>
+      </modules>
     </profile>
     <profile>
       <id>nifi2</id>
-      <properties>
-        <nar.plugin.version>2.3.0</nar.plugin.version>
-        <nifi.version>2.12.0</nifi.version>
-        <maven.compiler.release>21</maven.compiler.release>
-        <milo.version>1.1.8</milo.version>
-        <milo.artifact.prefix>milo-</milo.artifact.prefix>
-        <milo.source>milo1</milo.source>
-      </properties>
+      <modules>
+        <module>processors/pom-nifi2.xml</module>
+        <module>nar/pom-nifi2.xml</module>
+      </modules>
     </profile>
   </profiles>
   <licenses>
@@ -135,5 +200,4 @@
       <distribution>repo</distribution>
     </license>
   </licenses>
-  <description>Secure OPC UA data-change subscriptions for Apache NiFi.</description>
 </project>

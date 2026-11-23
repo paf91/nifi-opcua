@@ -298,6 +298,22 @@ class OpcSecurityTest {
         }
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(UnencryptedPasswordPolicy.class)
+    void selectsPasswordProtectionAcrossEndpointsAndPreservesEqualChoices(
+            UnencryptedPasswordPolicy allowance) {
+        OpcSecurity security = new OpcSecurity("None", "None", OpcSecurity.USERNAME, allowance);
+        EndpointDescription plain = endpoint("None", "None", token(UserTokenType.UserName, null));
+        UserTokenPolicy encrypted =
+                token(UserTokenType.UserName, SecurityPolicy.Basic256Sha256.getUri());
+        EndpointDescription first = endpoint("None", "None", encrypted);
+        EndpointDescription second = endpoint("None", "None", encrypted);
+        assertSame(first, security.selectEndpoint(Arrays.asList(plain, first, second)));
+        assertSame(second, security.selectEndpoint(Arrays.asList(second, first, plain)));
+        if (allowance != UnencryptedPasswordPolicy.NEVER)
+            assertSame(plain, security.selectEndpoint(Collections.singletonList(plain)));
+    }
+
     @Test
     void ranksChannelTokensBeforeOtherRsaTokensAndPreservesTies() {
         OpcSecurity security = new OpcSecurity("Basic256Sha256", "Sign", OpcSecurity.USERNAME);
@@ -328,6 +344,10 @@ class OpcSecurityTest {
                                         SecurityPolicy.Basic128Rsa15.getUri()))));
         OpcSecurity none = new OpcSecurity("None", "None", OpcSecurity.USERNAME);
         assertSame(other, none.userToken(endpoint("None", "None", inherited, other, same)));
+        EndpointDescription otherPolicy = endpoint("Basic256Sha256", "Sign", other);
+        EndpointDescription channelPolicy = endpoint("Basic256Sha256", "Sign", same);
+        assertSame(
+                channelPolicy, security.selectEndpoint(Arrays.asList(otherPolicy, channelPolicy)));
     }
 
     @Test

@@ -67,11 +67,14 @@ final class OpcSecurity {
         return policy != SecurityPolicy.None;
     }
 
-    private Optional<SecurityPolicy> tokenSecurityPolicy(
-            EndpointDescription endpoint, UserTokenPolicy token) {
+    private static String tokenPolicyUri(EndpointDescription endpoint, UserTokenPolicy token) {
         String uri = token.getSecurityPolicyUri();
-        return SecurityPolicy.fromUriSafe(
-                uri == null || uri.isEmpty() ? endpoint.getSecurityPolicyUri() : uri);
+        return uri == null || uri.isEmpty() ? endpoint.getSecurityPolicyUri() : uri;
+    }
+
+    private static int tokenRank(EndpointDescription endpoint, String policyUri) {
+        if (SecurityPolicy.None.getUri().equals(policyUri)) return 2;
+        return policyUri.equals(endpoint.getSecurityPolicyUri()) ? 0 : 1;
     }
 
     UserTokenPolicy userToken(EndpointDescription endpoint) {
@@ -83,21 +86,14 @@ final class OpcSecurity {
             for (UserTokenPolicy token : tokens) {
                 if (token == null || token.getTokenType() != identity) continue;
                 if (!usernameAuthentication()) return token;
-                Optional<SecurityPolicy> tokenPolicy = tokenSecurityPolicy(endpoint, token);
+                String policyUri = tokenPolicyUri(endpoint, token);
+                Optional<SecurityPolicy> tokenPolicy = SecurityPolicy.fromUriSafe(policyUri);
                 if (!tokenPolicy.isPresent() || !supportedTokenPolicy(tokenPolicy.get())) continue;
-                int rank;
-                if (tokenPolicy.get() == SecurityPolicy.None) {
-                    if (!allowsUnencryptedToken(endpoint)) {
-                        rejectedUnencrypted = true;
-                        continue;
-                    }
-                    rank = 2;
-                } else {
-                    rank =
-                            tokenPolicy.get().getUri().equals(endpoint.getSecurityPolicyUri())
-                                    ? 0
-                                    : 1;
+                if (tokenPolicy.get() == SecurityPolicy.None && !allowsUnencryptedToken(endpoint)) {
+                    rejectedUnencrypted = true;
+                    continue;
                 }
+                int rank = tokenRank(endpoint, policyUri);
                 if (rank < selectedRank) {
                     selected = token;
                     selectedRank = rank;
@@ -169,15 +165,24 @@ final class OpcSecurity {
 
     EndpointDescription selectEndpoint(List<EndpointDescription> endpoints) {
         IllegalArgumentException tokenError = null;
+        EndpointDescription selected = null;
+        int selectedRank = Integer.MAX_VALUE;
         for (EndpointDescription endpoint : endpoints) {
             if (!matchesChannel(endpoint)) continue;
             try {
-                userToken(endpoint);
-                return endpoint;
+                UserTokenPolicy token = userToken(endpoint);
+                if (!usernameAuthentication()) return endpoint;
+                int rank = tokenRank(endpoint, tokenPolicyUri(endpoint, token));
+                if (rank == 0) return endpoint;
+                if (rank < selectedRank) {
+                    selected = endpoint;
+                    selectedRank = rank;
+                }
             } catch (IllegalArgumentException e) {
                 if (tokenError == null) tokenError = e;
             }
         }
+        if (selected != null) return selected;
         if (tokenError != null) throw tokenError;
         throw new IllegalArgumentException(
                 "No OPC TCP endpoint for "
@@ -191,12 +196,7 @@ final class OpcSecurity {
     boolean requiresServerTrust(EndpointDescription endpoint) {
         return requiresClientIdentity()
                 || (usernameAuthentication()
-                        && tokenSecurityPolicy(endpoint, userToken(endpoint))
-                                        .orElseThrow(
-                                                () ->
-                                                        new IllegalArgumentException(
-                                                                "Unsupported username token"
-                                                                        + " security policy"))
-                                != SecurityPolicy.None);
+                        && !SecurityPolicy.None.getUri()
+                                .equals(tokenPolicyUri(endpoint, userToken(endpoint))));
     }
 }

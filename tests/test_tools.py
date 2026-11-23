@@ -133,11 +133,21 @@ class NarVerificationTest(unittest.TestCase):
     def build_nar(self, path, major=52, *, services=None, extensions=None,
                   missing_jar_entries=(), missing_nar_entries=(), manifest=None,
                   jar_overrides=None, nar_overrides=None, extra_jar_entries=None,
-                  processor_jar="nifi-opcua-processors-1.0.5-SNAPSHOT.jar",
+                  processor_jar=None, modern_coordinates=None,
                   extra_jar="extra-fixture-1.0.jar", duplicate_jar_entries=(),
                   duplicate_extra_jar_entries=(), duplicate_nar_entries=()):
         if services is None:
             services = "# OPC UA processor\n\n" + self.PROCESSOR + " # canonical\n"
+        if modern_coordinates is None:
+            modern_coordinates = major == 65
+        prefix = 'nifi-opcua-nifi2' if modern_coordinates else 'nifi-opcua'
+        processor_id = prefix + '-processors'
+        nar_id = prefix + '-nar'
+        if processor_jar is None:
+            processor_jar = f'{processor_id}-{self.VERSION}.jar'
+        def pom_properties(artifact):
+            return {f'META-INF/maven/io.github.paf91.nifi/{artifact}/pom.properties':
+                    f'groupId=io.github.paf91.nifi\nartifactId={artifact}\nversion={self.VERSION}\n'}
         if manifest is None:
             root = ElementTree.Element("extensionManifest")
             for name, value in (("groupId", "io.github.paf91.nifi"),
@@ -153,12 +163,11 @@ class NarVerificationTest(unittest.TestCase):
             manifest = ElementTree.tostring(root)
         jar_entries = {
             self.SERVICE: services, "META-INF/LICENSE": "test license",
-            self.JAR_METADATA: ("groupId=io.github.paf91.nifi\nartifactId=nifi-opcua-processors\n"
-                                f"version={self.VERSION}\n"),
+            **pom_properties(processor_id),
             self.PROCESSOR.replace(".", "/") + ".class": (
                 b"\xca\xfe\xba\xbe\x00\x00" + major.to_bytes(2, "big"))}
         nar_entries = {
-            self.MANIFEST: manifest, "META-INF/LICENSE": "test license",
+            self.MANIFEST: manifest, "META-INF/LICENSE": "test license", **pom_properties(nar_id),
             "META-INF/MANIFEST.MF": ("Manifest-Version: 1.0\r\nNar-Group: io.github.paf91.nifi\r\n"
                                      "Nar-Id: nifi-opcua-nar\r\n"
                                      f"Nar-Version: {self.VERSION}\r\n\r\n")}
@@ -203,6 +212,23 @@ class NarVerificationTest(unittest.TestCase):
                 path = Path(directory) / "test.nar"
                 self.build_nar(path, major)
                 self.assertEqual((1, 1), load("verify-nar").verify(path, major))
+
+    def test_rejects_coordinates_from_the_other_nifi_target_even_with_correct_bytecode(self):
+        for major in (52, 65):
+            with self.subTest(major=major), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "different-target.nar"
+                self.build_nar(path, major, modern_coordinates=(major == 52))
+                with self.assertRaises((KeyError, ValueError)):
+                    load("verify-nar").verify(path, major)
+
+    def test_rejects_maven_identity_that_only_matches_the_runtime_bundle(self):
+        modern = 'META-INF/maven/io.github.paf91.nifi/nifi-opcua-nifi2-nar/pom.properties'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wrong-maven-metadata.nar"
+            self.build_nar(path, 65, nar_overrides={modern:
+                f'groupId=io.github.paf91.nifi\nartifactId=nifi-opcua-nar\nversion={self.VERSION}\n'})
+            with self.assertRaises((KeyError, ValueError)):
+                load("verify-nar").verify(path, 65)
 
     def test_accepts_an_unrelated_bundled_jar(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -452,7 +478,7 @@ class NarVerificationTest(unittest.TestCase):
     def test_rejects_wrong_jvm_target(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.nar"
-            self.build_nar(path, 65)
+            self.build_nar(path, 65, modern_coordinates=False)
             with self.assertRaisesRegex(ValueError, "Incompatible bytecode"):
                 load("verify-nar").verify(path, 52)
 
@@ -460,23 +486,22 @@ class NarVerificationTest(unittest.TestCase):
 class ReleaseTest(unittest.TestCase):
     def test_target_artifacts_follow_pom_versions(self):
         fixtures = [('''<project xmlns="http://maven.apache.org/POM/4.0.0">
-            <version>7.4.1-SNAPSHOT</version><profiles>
-            <profile><id>nifi1</id><properties><nifi.version>1.28.3</nifi.version>
-            <maven.compiler.release>8</maven.compiler.release></properties></profile>
+            <version>7.4.1-SNAPSHOT</version><properties>
+            <nifi1.version>1.28.3</nifi1.version><nifi1.java>8</nifi1.java>
+            <nifi2.version>2.19.5</nifi2.version><nifi2.java>21</nifi2.java></properties><profiles>
+            <profile><id>nifi1</id></profile>
             <profile><id>unrelated</id></profile>
-            <profile><id>nifi2</id><properties><nifi.version>2.19.5</nifi.version>
-            <maven.compiler.release>21</maven.compiler.release></properties></profile>
+            <profile><id>nifi2</id></profile>
             </profiles></project>''', [
                 {'profile': 'nifi1', 'java': '8', 'nifi': '1.28.3', 'bytecode': '52',
                  'artifact': 'nifi-opcua-1.28.3-7.4.1-SNAPSHOT.nar'},
                 {'profile': 'nifi2', 'java': '21', 'nifi': '2.19.5', 'bytecode': '65',
                  'artifact': 'nifi-opcua-2.19.5-7.4.1-SNAPSHOT.nar'}]),
             ('''<project xmlns="http://maven.apache.org/POM/4.0.0">
-            <version>9.6.2</version><profiles>
-            <profile><id>nifi2</id><properties><nifi.version>2.31.7</nifi.version>
-            <maven.compiler.release>25</maven.compiler.release></properties></profile>
-            <profile><id>nifi1</id><properties><nifi.version>1.35.9</nifi.version>
-            <maven.compiler.release>11</maven.compiler.release></properties></profile>
+            <version>9.6.2</version><properties>
+            <nifi2.version>2.31.7</nifi2.version><nifi2.java>25</nifi2.java>
+            <nifi1.version>1.35.9</nifi1.version><nifi1.java>11</nifi1.java></properties><profiles>
+            <profile><id>nifi2</id></profile><profile><id>nifi1</id></profile>
             </profiles></project>''', [
                 {'profile': 'nifi2', 'java': '25', 'nifi': '2.31.7', 'bytecode': '69',
                  'artifact': 'nifi-opcua-2.31.7-9.6.2.nar'},

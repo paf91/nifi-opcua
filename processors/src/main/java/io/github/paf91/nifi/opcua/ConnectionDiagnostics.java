@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 package io.github.paf91.nifi.opcua;
 
+import org.eclipse.milo.opcua.stack.core.security.TrustListManager;
 import org.eclipse.milo.opcua.stack.core.types.builtin.*;
 import org.eclipse.milo.opcua.stack.core.types.structured.*;
 
@@ -14,13 +15,24 @@ import java.util.*;
 /** Bounded metadata only: never stores passwords, private keys or sensor values. */
 final class ConnectionDiagnostics {
     private final java.util.function.UnaryOperator<String> redact;
+    private final boolean verification;
+    private String trustSource = "PKI Directory";
+    private String trustStatus = "Trust setup was not reached.";
+    private String issuerDirectory;
+    private boolean pkiConfigured;
+    private String advertisedFingerprint;
 
     ConnectionDiagnostics() {
         this(java.util.function.UnaryOperator.identity());
     }
 
     ConnectionDiagnostics(java.util.function.UnaryOperator<String> redact) {
+        this(redact, false);
+    }
+
+    ConnectionDiagnostics(java.util.function.UnaryOperator<String> redact, boolean verification) {
         this.redact = redact;
+        this.verification = verification;
     }
 
     private final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -44,9 +56,94 @@ final class ConnectionDiagnostics {
         metadata.put("serverCertificateValidation", validation.value());
     }
 
+    void trustSource(String source) {
+        if (verification && source != null) trustSource = source;
+    }
+
+    void trustRequired(ServerCertificateValidation mode, boolean required) {
+        if (!verification) return;
+        if (mode == ServerCertificateValidation.NONE) {
+            trustStatus = "Server Certificate Validation is None. The trust source was skipped.";
+        } else if (!required) {
+            trustStatus =
+                    "The selected endpoint and user token do not require a server certificate.";
+        } else {
+            trustStatus = "The trust source could not be opened.";
+        }
+    }
+
+    void trustLoaded(OpcSettings settings, TrustListManager manager, String issuerFolder) {
+        if (!verification) return;
+        issuerDirectory = issuerFolder + "/certs";
+        pkiConfigured = settings.pki() != null;
+        boolean directoryTrust = settings.serverTrustStore() == null;
+        trustSource = directoryTrust ? "PKI Directory" : settings.serverTrustStore().type();
+        try {
+            trustStatus =
+                    "Milo opened the trust source (trusted certificates = "
+                            + manager.getTrustedCertificates().size()
+                            + ", issuer certificates = "
+                            + manager.getIssuerCertificates().size()
+                            + ", trusted CRLs = "
+                            + manager.getTrustedCrls().size()
+                            + ", issuer CRLs = "
+                            + manager.getIssuerCrls().size()
+                            + ").";
+        } catch (RuntimeException unavailable) {
+            trustStatus =
+                    "The trust source opened. Its certificate and CRL counts are unavailable.";
+        }
+        if (pkiConfigured) {
+            trustStatus += PemBundleCheck.inspect(settings.pki(), directoryTrust, issuerDirectory);
+        }
+    }
+
+    String trustExplanation(Throwable failure) {
+        if (!verification) return "";
+        String summary = "Server Trust Source = " + trustSource + ". " + trustStatus + " ";
+        if (advertisedFingerprint != null)
+            summary += "Advertised server leaf SHA-256 = " + advertisedFingerprint + ". ";
+        for (int depth = 0; failure != null && depth < 16; depth++, failure = failure.getCause()) {
+            if (issuerDirectory != null && missingTrustPath(failure)) {
+                String anchors =
+                        "PKI Directory".equals(trustSource)
+                                ? "trusted/certs"
+                                : "a trusted certificate entry in the selected "
+                                        + trustSource
+                                        + " store";
+                return summary
+                        + "Compare the advertised server certificate SHA-256 fingerprint with the"
+                        + " one confirmed by the server owner. Check the approved trust anchor in "
+                        + anchors
+                        + ". "
+                        + (pkiConfigured
+                                ? "Check for any intermediate omitted by the server in the PKI"
+                                        + " Directory under "
+                                : "If the server omits an intermediate, ask the server owner to"
+                                      + " supply it or configure a PKI Directory and put it under ")
+                        + issuerDirectory
+                        + ". If you trust a CA-issued leaf directly, keep it in the selected trust"
+                        + " source and put its issuing root in that issuer directory. ";
+            }
+        }
+        return summary;
+    }
+
+    private static boolean missingTrustPath(Throwable failure) {
+        return failure instanceof CertPathBuilderException
+                || (failure instanceof java.security.InvalidAlgorithmParameterException
+                        && "the trustAnchors parameter must be non-empty"
+                                .equals(failure.getMessage()));
+    }
+
     synchronized boolean sessionActive(NodeId id) {
         sessionActive = true;
         sessionActivations++;
+        return recordSessionId(id);
+    }
+
+    /** Returns whether the session differs from the first session seen by this connection. */
+    synchronized boolean recordSessionId(NodeId id) {
         if (firstSession == null) {
             firstSession = id;
             return false;
@@ -107,7 +204,9 @@ final class ConnectionDiagnostics {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded());
             StringBuilder fingerprint = new StringBuilder();
             for (byte b : hash) fingerprint.append(String.format("%02x", b & 255));
-            detail.put("sha256", fingerprint.toString());
+            String sha256 = fingerprint.toString();
+            detail.put("sha256", sha256);
+            if (verification && "serverCertificate".equals(label)) advertisedFingerprint = sha256;
         } catch (Exception e) {
             detail.put("sha256", "unavailable");
         }
